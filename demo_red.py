@@ -8,6 +8,7 @@ Raspberry Pi: dos comunidades unidas solo por un Faro SIMULADO.
 
     python3 demo_red.py                    # luz simulada rápida
     python3 demo_red.py --lento            # luz simulada como la real (25 B/s, 5 % pérdida)
+    python3 demo_red.py --worker http://127.0.0.1:8787   # faroB además es el gateway hacia el Worker
 
 Luego, en otras terminales (un chat por nodo):
     python3 App/chat.py --api 7101 interactivo      # a1
@@ -37,6 +38,7 @@ RED = [("a1",    7001, 7101, [7002], []),
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--lento", action="store_true", help="Faro simulado a 25 B/s con 5 %% de pérdida")
+    p.add_argument("--worker", default=None, help="URL del Worker: faroB actúa como gateway")
     a = p.parse_args()
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     logs = os.path.join(AQUI, "demo_logs")
@@ -49,11 +51,18 @@ def main():
         for v in vecinos:
             cmd += ["--vecino", f"127.0.0.1:{v}"]
         cmd += extra
+        if a.worker and alias == "faroB":
+            cmd += ["--worker", a.worker]
         if a.lento and "--faro" in extra:
             cmd += ["--velocidad", "25", "--perdida", "0.05"]
         salida = open(os.path.join(logs, f"{alias}.log"), "w")
         procesos.append((alias, api, subprocess.Popen(cmd, stdout=salida, stderr=subprocess.STDOUT)))
         print(f"  {alias:6} API {api}   python3 App/chat.py --api {api} interactivo")
+    if a.worker:
+        llave = subprocess.run([sys.executable, os.path.join(AQUI, "faronet_nodo.py"), "--alias", "faroB",
+                                "--api", "7113", "--carpeta", os.path.join(logs, "llaves"),
+                                "--llave-gateway"], capture_output=True, text=True).stdout.strip()
+        print(f"\n  Gateway: faroB -> {a.worker}\n  GATEWAY_LLAVE = {llave}")
     print("\nRed levantada. El directorio tarda unos segundos en llenarse "
           f"({'unos 3 minutos' if a.lento else 'unos 10 s'}). Ctrl+C para detener.")
     try:

@@ -3,3 +3,6 @@ __pycache__/
 demo_logs/
 *.llave
 .faronet/
+node_modules/
+.wrangler/
+.dev.vars

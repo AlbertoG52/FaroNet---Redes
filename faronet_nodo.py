@@ -14,6 +14,10 @@ Todos los parámetros se reciben desde la terminal. Ejemplos:
   sudo pigpiod
   python3 faronet_nodo.py --alias faroA --faro real --pausa 40
 
+  # Nodo GATEWAY (Pi B): además envía los temas públicos al Worker de Cloudflare
+  python3 faronet_nodo.py --alias faroB --faro real --pausa 40 --worker https://faronet.xxx.workers.dev
+  python3 faronet_nodo.py --alias faroB --llave-gateway     # la llave para wrangler.toml
+
   # Lo mismo pero con el Faro SIMULADO (en la laptop, sin Raspberry Pi):
   python3 faronet_nodo.py --alias faroA --faro simulado --velocidad 25
 
@@ -29,7 +33,7 @@ import sys
 import threading
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
-for carpeta in ("Mesh", "App", "Faro"):
+for carpeta in ("Mesh", "App", "Faro", "Gateway"):
     sys.path.insert(0, os.path.join(AQUI, carpeta))
 
 try:
@@ -67,6 +71,11 @@ def argumentos():
     p.add_argument("--api", type=int, default=7100, help="puerto local del chat (127.0.0.1)")
     p.add_argument("--gateway", action="store_true",
                    help="anunciarse como gateway hacia el edge (Cloudflare Workers)")
+    p.add_argument("--worker", default=None, metavar="URL",
+                   help="URL del Worker: este nodo es el GATEWAY y le envía los temas públicos "
+                        "y el directorio (implica --gateway)")
+    p.add_argument("--llave-gateway", action="store_true",
+                   help="solo mostrar la llave pública que va en GATEWAY_LLAVE (wrangler.toml) y salir")
     p.add_argument("--retardo-max", type=float, default=0.5,
                    help="espera aleatoria máxima (s) al reenviar una celda")
     p.add_argument("--rotar-mac-cada", type=float, default=1800,
@@ -113,6 +122,13 @@ def main():
     archivo = None if a.efimero else os.path.join(os.path.expanduser(a.carpeta),
                                                   f"nodo-{nombre}-{a.api}.llave")
     identidad = Identidad(archivo)
+    if a.llave_gateway:
+        print(bytes(identidad.verificacion).hex())
+        return
+    if a.worker:
+        a.gateway = True
+        if a.efimero:
+            sys.exit("El gateway necesita una llave fija: no use --efimero junto con --worker")
 
     interfaces = []
     try:
@@ -131,6 +147,14 @@ def main():
                 retardo_max=a.retardo_max, depurar=a.depurar,
                 rotar_mac_cada=a.rotar_mac_cada)
     servicio = ServicioChat(nodo)
+    gateway = None
+    if a.worker:
+        from gateway import Gateway
+        try:
+            gateway = Gateway(nodo, servicio, a.worker, depurar=a.depurar)
+        except ValueError as e:
+            nodo.detener()
+            sys.exit(str(e))
     try:
         puerto_api = servicio.servir(a.api)
     except OSError as e:
@@ -142,9 +166,14 @@ def main():
     signal.signal(signal.SIGINT, lambda *_: terminado.set())
     signal.signal(signal.SIGTERM, lambda *_: terminado.set())
     nodo.iniciar()
+    if gateway:
+        gateway.iniciar()
     print(f"Nodo FaroNet listo: {a.alias or '(sin alias)'}  id {id_a_texto(nodo.id)}", flush=True)
     print(f"  interfaces: {', '.join(str(i) for i in interfaces)}", flush=True)
     print(f"  chat:       python3 App/chat.py --api {puerto_api} interactivo", flush=True)
+    if gateway:
+        print(f"  gateway:    publica los temas públicos en {gateway.url}", flush=True)
+        print(f"              llave (GATEWAY_LLAVE): {gateway.llave}", flush=True)
     print("  Ctrl+C para salir.", flush=True)
     while not terminado.wait(0.5):
         pass

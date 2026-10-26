@@ -25,6 +25,7 @@ Este código va **encima** de la Capa 1 (`Faro/DispositivoLuzAdaptador.py`) y la
 | `faronet_nodo.py` | Arranca un nodo |
 | `demo_red.py` | Levanta una red de 7 nodos en una sola computadora |
 | `tests/test_mesh.py` | 18 pruebas automáticas |
+| `Gateway/`, `Edge/` | Gateway y Worker de Cloudflare: ver `Edge/LEEME.md` |
 
 ## 1. Cómo funciona
 

@@ -1,0 +1,33 @@
+# Configuración del Worker de FaroNet (Cloudflare Workers, plan gratuito).
+# Despliegue reproducible:  npm install  &&  npx wrangler deploy
+# Aquí NO hay secretos: GATEWAY_LLAVE es la llave PÚBLICA del nodo gateway.
+
+name = "faronet"
+main = "src/index.ts"
+compatibility_date = "2026-01-15"
+
+# Política de no registro: sin bitácoras de peticiones en Cloudflare.
+[observability]
+enabled = false
+
+[vars]
+# Llave pública Ed25519 del gateway (64 caracteres hex). Se obtiene en la Pi B con:
+#   python3 faronet_nodo.py --alias faroB --llave-gateway
+GATEWAY_LLAVE = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[[durable_objects.bindings]]
+name = "SALAS"
+class_name = "Sala"
+
+[[durable_objects.bindings]]
+name = "BUZONES"
+class_name = "Buzon"
+
+[[durable_objects.bindings]]
+name = "CONTROL"
+class_name = "Control"
+
+# En el plan gratuito los Durable Objects deben usar almacenamiento SQLite.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Sala", "Buzon", "Control"]
