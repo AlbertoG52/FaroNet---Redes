@@ -146,15 +146,28 @@ def rafaga(gpio, duracion_us, frecuencia, ciclo=33):
     return pulsos
 
 
+# Codificación de un byte (en unidades de T). Después de cada ráfaga va una
+# pausa de al menos el DOBLE de la ráfaga: los receptores de 38 kHz (VS1838B,
+# KY-022) dejan de ver ráfagas muy seguidas (las toman por ruido). Con la
+# pausa de 1T que se usaba antes para el bit 0, los bytes con muchos ceros
+# (por ejemplo "0", "A", "1") se perdían en las tramas largas.
+CABECERA_T = 3          # ráfaga de cabecera
+PAUSA_CABECERA_T = 4    # pausa después de la cabecera
+PAUSA_BIT0_T = 2        # bit 0: ráfaga T + pausa 2T
+PAUSA_BIT1_T = 4        # bit 1: ráfaga T + pausa 4T
+UMBRAL_BIT_T = 3        # pausa >= 3T se lee como 1
+
+
 @functools.lru_cache(maxsize=1024)
 def pulsos_de_byte(gpio, byte, T, frecuencia, pausa_final=12, ciclo=33):
-    """cabecera 3T+3T, 8 bits (T + pausa T ó 3T), fin T + pausa_final·T."""
+    """cabecera 3T+4T, 8 bits (T + pausa 2T ó 4T), fin T + pausa_final·T."""
     def pausa(us):
         return [pigpio.pulse(0, 1 << gpio, int(us))]
-    p = rafaga(gpio, 3 * T, frecuencia, ciclo) + pausa(3 * T)
+    p = rafaga(gpio, CABECERA_T * T, frecuencia, ciclo) + pausa(PAUSA_CABECERA_T * T)
     for i in range(7, -1, -1):
         bit = (byte >> i) & 1
-        p += rafaga(gpio, T, frecuencia, ciclo) + pausa(3 * T if bit else T)
+        p += rafaga(gpio, T, frecuencia, ciclo) + pausa(
+            (PAUSA_BIT1_T if bit else PAUSA_BIT0_T) * T)
     p += rafaga(gpio, T, frecuencia, ciclo) + pausa(pausa_final * T)
     return p
 
@@ -165,14 +178,14 @@ def decodificar(d, T):
         return None
     if not (2 * T <= d[0] <= 5 * T):          # cabecera: ráfaga ~3T
         return None
-    if not (1.5 * T <= d[1] <= 5 * T):        # cabecera: pausa ~3T
+    if not (2.5 * T <= d[1] <= 6 * T):        # cabecera: pausa ~4T
         return None
     byte = 0
     for i in range(8):
         p = d[3 + 2 * i]
-        if p > 5 * T:
+        if p > 6 * T:
             return None
-        byte = (byte << 1) | (1 if p >= 2 * T else 0)
+        byte = (byte << 1) | (1 if p >= UMBRAL_BIT_T * T else 0)
     return byte
 
 
@@ -712,7 +725,8 @@ class _FaroBase:
 
     def _duracion_bytes(self, n):
         """Tiempo máximo (s) para transmitir n bytes, peor caso (todos los bits 1)."""
-        por_byte = (6 + 8 * 4 + 1 + self.pausa) * self.T / 1e6 + 0.005
+        por_byte = (CABECERA_T + PAUSA_CABECERA_T + 8 * (1 + PAUSA_BIT1_T) + 1
+                    + self.pausa) * self.T / 1e6 + 0.005
         return n * por_byte
 
     def _esperar_ack(self, confirmado, largo_ack):
