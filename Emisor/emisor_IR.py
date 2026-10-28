@@ -37,6 +37,7 @@ Uso:
     python3 emisor_IR.py --pin 38 --mensaje "hola" --repetir 5
     python3 emisor_IR.py --prueba         # portadora encendida 3 s
     python3 emisor_IR.py --mensaje "..." --pausa 40   # más descanso entre letras
+    python3 emisor_IR.py --mensaje "..." --ciclo 15   # luz más débil (no satura)
 """
 import argparse
 import sys
@@ -106,10 +107,12 @@ class BotonPanico:
         self.pi.set_glitch_filter(self.boton, 0)
 
 
-def rafaga(gpio, duracion_us, frecuencia):
-    """Pulsos de una ráfaga de portadora (33 % del ciclo encendido)."""
+def rafaga(gpio, duracion_us, frecuencia, ciclo=33):
+    """Pulsos de una ráfaga de portadora. `ciclo` = % del tiempo que el LED
+    está encendido en cada periodo de la portadora (33 por defecto). Con
+    menos % la luz llega más débil; la frecuencia (38 kHz) no cambia."""
     periodo = round(1e6 / frecuencia)          # 26 µs a 38 kHz
-    encendido = max(1, periodo // 3)
+    encendido = max(1, min(periodo - 1, int(periodo * ciclo / 100)))
     apagado = periodo - encendido
     ciclos = max(1, round(duracion_us / periodo))
     mascara = 1 << gpio
@@ -124,13 +127,13 @@ def pausa(gpio, duracion_us):
     return [pigpio.pulse(0, 1 << gpio, int(duracion_us))]
 
 
-def pulsos_de_byte(gpio, byte, T, frecuencia, pausa_final=12):
+def pulsos_de_byte(gpio, byte, T, frecuencia, pausa_final=12, ciclo=33):
     """Lista de pulsos de pigpio para enviar un byte completo."""
-    p = rafaga(gpio, 3 * T, frecuencia) + pausa(gpio, 3 * T)   # cabecera
-    for i in range(7, -1, -1):                                  # 8 bits
+    p = rafaga(gpio, 3 * T, frecuencia, ciclo) + pausa(gpio, 3 * T)   # cabecera
+    for i in range(7, -1, -1):                                         # 8 bits
         bit = (byte >> i) & 1
-        p += rafaga(gpio, T, frecuencia) + pausa(gpio, 3 * T if bit else T)
-    p += rafaga(gpio, T, frecuencia) + pausa(gpio, pausa_final * T)   # fin
+        p += rafaga(gpio, T, frecuencia, ciclo) + pausa(gpio, 3 * T if bit else T)
+    p += rafaga(gpio, T, frecuencia, ciclo) + pausa(gpio, pausa_final * T)   # fin
     return p
 
 
@@ -159,6 +162,9 @@ def main():
                    help="unidad de tiempo T en microsegundos (igual en el receptor)")
     p.add_argument("--frecuencia", type=int, default=38000,
                    help="frecuencia de la portadora en Hz")
+    p.add_argument("--ciclo", type=int, default=33,
+                   help="%% del tiempo que el LED está encendido en la portadora "
+                        "(menos = luz más débil; por ejemplo 10 a 33)")
     p.add_argument("--pausa", type=int, default=12,
                    help="silencio después de cada letra, en unidades de T "
                         "(más alto = el receptor descansa más)")
@@ -200,7 +206,7 @@ def main():
         if a.prueba:
             print(f"Portadora de {a.frecuencia} Hz en el pin {a.pin} durante 3 s...")
             # un solo ciclo de portadora, repetido sin parar durante 3 s
-            pi.wave_add_generic(rafaga(gpio, 1, a.frecuencia))
+            pi.wave_add_generic(rafaga(gpio, 1, a.frecuencia, a.ciclo))
             wid = pi.wave_create()
             pi.wave_send_repeat(wid)
             pi.write(led_tx, 1)                     # LED TX encendido
@@ -226,7 +232,8 @@ def main():
                     for i in range(len(t)):
                         panico.revisar()
                         enviar_pulsos(pi, pulsos_de_byte(gpio, t[i], a.t_us,
-                                                         a.frecuencia, a.pausa), panico)
+                                                         a.frecuencia, a.pausa, a.ciclo),
+                                      panico)
                     time.sleep(0.03)                # descanso entre tramas
                 # que el LED se vea al menos 0.2 s, aunque el mensaje sea corto
                 time.sleep(max(0, 0.2 - (time.time() - inicio)))

@@ -127,10 +127,12 @@ def _borrar(datos):
 
 
 # ---- Codificación de línea (igual que emisor_IR.py / receptor_IR.py) -------
-def rafaga(gpio, duracion_us, frecuencia):
-    """Pulsos de una ráfaga de portadora (33 % del ciclo encendido)."""
+def rafaga(gpio, duracion_us, frecuencia, ciclo=33):
+    """Pulsos de una ráfaga de portadora. `ciclo` = % del tiempo que el LED
+    está encendido en cada periodo de la portadora (33 por defecto). Con
+    menos % la luz llega más débil; la frecuencia (38 kHz) no cambia."""
     periodo = round(1e6 / frecuencia)          # 26 µs a 38 kHz
-    encendido = max(1, periodo // 3)
+    encendido = max(1, min(periodo - 1, int(periodo * ciclo / 100)))
     apagado = periodo - encendido
     ciclos = max(1, round(duracion_us / periodo))
     mascara = 1 << gpio
@@ -141,15 +143,15 @@ def rafaga(gpio, duracion_us, frecuencia):
     return pulsos
 
 
-def pulsos_de_byte(gpio, byte, T, frecuencia, pausa_final=12):
+def pulsos_de_byte(gpio, byte, T, frecuencia, pausa_final=12, ciclo=33):
     """cabecera 3T+3T, 8 bits (T + pausa T ó 3T), fin T + pausa_final·T."""
     def pausa(us):
         return [pigpio.pulse(0, 1 << gpio, int(us))]
-    p = rafaga(gpio, 3 * T, frecuencia) + pausa(3 * T)
+    p = rafaga(gpio, 3 * T, frecuencia, ciclo) + pausa(3 * T)
     for i in range(7, -1, -1):
         bit = (byte >> i) & 1
-        p += rafaga(gpio, T, frecuencia) + pausa(3 * T if bit else T)
-    p += rafaga(gpio, T, frecuencia) + pausa(pausa_final * T)
+        p += rafaga(gpio, T, frecuencia, ciclo) + pausa(3 * T if bit else T)
+    p += rafaga(gpio, T, frecuencia, ciclo) + pausa(pausa_final * T)
     return p
 
 
@@ -759,7 +761,7 @@ class DispositivoLuzAdaptador(_FaroBase):
     def __init__(self, pin_emisor=38, pin_receptor=40, led_tx=13, led_rx=15,
                  boton=11, led_panico=16, t_us=600, frecuencia=38000, pausa=12,
                  archivo_mac=ARCHIVO_MAC, activo_alto=False, al_panico=None,
-                 depurar=False, pi=None):
+                 depurar=False, pi=None, ciclo=33):
         if pigpio is None:
             raise RuntimeError("Falta pigpio: en la Raspberry Pi instálelo con "
                                "'sudo apt install pigpio python3-pigpio'; en una laptop "
@@ -769,8 +771,11 @@ class DispositivoLuzAdaptador(_FaroBase):
                             ("del botón", boton), ("del LED de pánico", led_panico)):
             if pin not in FISICO_A_GPIO:
                 raise ValueError(f"El pin físico {pin} {nombre} no es un GPIO")
+        if not 1 <= ciclo <= 50:
+            raise ValueError("El ciclo de la portadora debe estar entre 1 y 50 %")
         super().__init__(t_us, pausa, archivo_mac, al_panico, depurar)
         self.frecuencia = frecuencia
+        self.ciclo = ciclo                          # % encendido: potencia de la luz
         self._nivel_ir = 1 if activo_alto else 0     # KY-022: 0 = recibiendo luz
         self._g_tx = FISICO_A_GPIO[pin_emisor]
         self._g_rx = FISICO_A_GPIO[pin_receptor]
@@ -832,7 +837,7 @@ class DispositivoLuzAdaptador(_FaroBase):
         for byte in datos:
             self._revisar_panico()
             p.wave_add_generic(pulsos_de_byte(self._g_tx, byte, self.T,
-                                              self.frecuencia, self.pausa))
+                                              self.frecuencia, self.pausa, self.ciclo))
             wid = p.wave_create()
             if wid < 0:
                 raise RuntimeError("pigpio no pudo crear la onda")
