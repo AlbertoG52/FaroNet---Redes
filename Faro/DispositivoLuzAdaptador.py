@@ -864,37 +864,19 @@ class DispositivoLuzAdaptador(_FaroBase):
             time.sleep(0.001)
 
     def _transmitir_bytes(self, datos):
-        """Envía los bytes por la luz, uno por uno, como ondas de pigpio.
-
-        Mientras sale un byte ya se deja en cola el siguiente (modo SYNC de
-        pigpio: empieza justo cuando termina el anterior). Así el silencio
-        entre bytes es exactamente pausa·T aunque Python se atrase; antes, si
-        la Pi estaba ocupada, el silencio se alargaba y el otro Faro creía que
-        la trama se había cortado."""
+        """Envía los bytes por la luz, uno por uno, como ondas de pigpio: se
+        arma la onda del byte, se envía, se espera a que termine y se borra.
+        (Siempre hay UNA sola onda en pigpio; con dos a la vez pigpio se
+        quedaba sin espacio a mitad de las tramas largas.)"""
         p = self.pi
-        sync = getattr(pigpio, "WAVE_MODE_ONE_SHOT_SYNC", None)
-        anterior = None
-        try:
-            for byte in datos:
-                self._revisar_panico()
-                wid = self._crear_onda(byte)
-                if anterior is None or sync is None:
-                    if anterior is not None:    # pigpio viejo: un byte a la vez
-                        self._esperar_onda(lambda: not p.wave_tx_busy())
-                        p.wave_delete(anterior)
-                    p.wave_send_once(wid)
-                else:
-                    p.wave_send_using_mode(wid, sync)
-                    # esperar a que empiece el nuevo (o a que todo termine)
-                    self._esperar_onda(lambda: p.wave_tx_at() == wid or not p.wave_tx_busy())
-                    p.wave_delete(anterior)
-                anterior = wid
-            self._esperar_onda(lambda: not p.wave_tx_busy())
-        finally:
-            if anterior is not None:
-                if p.wave_tx_busy():            # se interrumpió por un error
-                    p.wave_tx_stop()
-                p.wave_delete(anterior)
+        for byte in datos:
+            self._revisar_panico()
+            wid = self._crear_onda(byte)
+            try:
+                p.wave_send_once(wid)
+                self._esperar_onda(lambda: not p.wave_tx_busy())
+            finally:
+                p.wave_delete(wid)
 
     # --- recepción ---
     def _al_cambiar_luz(self, _gpio, nivel, tick):
