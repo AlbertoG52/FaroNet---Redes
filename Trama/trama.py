@@ -158,12 +158,15 @@ def armar_v3(datos, origen, destino, tipo, n_msg=0, fragmento=0, total=1,
     return _cerrar(cuerpo)
 
 
-def fragmentar_v3(mensaje, origen, destino, n_msg, protocolo):
-    """Divide un mensaje en tramas de datos de versión 3 (110 bytes c/u)."""
-    if len(mensaje) > MAX_MENSAJE:
-        raise ValueError(f"El mensaje no puede pasar de {MAX_MENSAJE} bytes")
-    trozos = [mensaje[i:i + MAX_DATOS_V3]
-              for i in range(0, len(mensaje), MAX_DATOS_V3)] or [b""]
+def fragmentar_v3(mensaje, origen, destino, n_msg, protocolo, max_datos=MAX_DATOS_V3):
+    """Divide un mensaje en tramas de datos de versión 3 (hasta max_datos
+    bytes de datos cada una; 110 como máximo)."""
+    if not 1 <= max_datos <= MAX_DATOS_V3:
+        raise ValueError(f"max_datos debe estar entre 1 y {MAX_DATOS_V3}")
+    if len(mensaje) > max_datos * MAX_FRAGMENTOS:
+        raise ValueError(f"El mensaje no puede pasar de {max_datos * MAX_FRAGMENTOS} bytes")
+    trozos = [mensaje[i:i + max_datos]
+              for i in range(0, len(mensaje), max_datos)] or [b""]
     return [armar_v3(t, origen, destino, TIPO_DATOS, n_msg, i, len(trozos), protocolo)
             for i, t in enumerate(trozos)]
 

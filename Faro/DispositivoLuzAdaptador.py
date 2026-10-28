@@ -251,9 +251,13 @@ class _FaroBase:
     reensamblado, MAC, pánico. Las subclases solo saben transmitir bytes y
     entregar los bytes recibidos a _procesar_byte()."""
 
-    def __init__(self, t_us, pausa, archivo_mac, al_panico, depurar):
+    def __init__(self, t_us, pausa, archivo_mac, al_panico, depurar,
+                 datos_por_trama=trama.MAX_DATOS_V3):
+        if not 1 <= datos_por_trama <= trama.MAX_DATOS_V3:
+            raise ValueError(f"datos_por_trama debe estar entre 1 y {trama.MAX_DATOS_V3}")
         self.T = t_us
         self.pausa = pausa
+        self.datos_por_trama = datos_por_trama     # tramas más cortas = menos riesgo
         self.depurar = depurar
         self.archivo_mac = archivo_mac
         self.al_panico = al_panico
@@ -267,7 +271,7 @@ class _FaroBase:
             tramas_enviadas=0, reenvios=0, acks_enviados=0, acks_recibidos=0,
             tramas_ok=0, tramas_descartadas=0, bytes_ilegibles=0, ecos=0,
             duplicados=0, mensajes_entregados=0, mensajes_fallidos=0,
-            mensajes_incompletos=0)
+            mensajes_incompletos=0, acks_tardios=0)
 
         self._cola_salida = queue.Queue()
         self._cola_acks = queue.Queue()
@@ -283,6 +287,7 @@ class _FaroBase:
         self._ultima_luz = 0.0               # hora en que el receptor vio luz por última vez
         self._ultimo_byte = time.time()
         self._fin_tx = 0.0                   # hora en que terminó la última trama propia
+        self._s_por_byte = None              # tiempo real que toma enviar un byte (medido)
         self._ultimo_anuncio = 0.0
         self._desarmador = trama.Desarmador()
         # ¿Se corta una trama a medias por silencio medido con el reloj de la
@@ -303,8 +308,9 @@ class _FaroBase:
     # ------------------------------------------------------------------ API
     @property
     def mtu(self):
-        """Tamaño máximo de un mensaje para enviar() (1650 bytes)."""
-        return trama.MAX_MENSAJE
+        """Tamaño máximo de un mensaje para enviar(): 15 tramas de
+        datos_por_trama bytes (1650 bytes con el valor normal, 110)."""
+        return self.datos_por_trama * trama.MAX_FRAGMENTOS
 
     def enviar(self, datos, destino=DIFUSION, protocolo=PROTO_CHAT):
         """Pone un mensaje en la cola de salida y devuelve su Envio.
@@ -568,6 +574,12 @@ class _FaroBase:
             if evento is not None:
                 self.estadisticas["acks_recibidos"] += 1
                 evento.set()
+            else:
+                self.estadisticas["acks_tardios"] += 1
+            if self.depurar:
+                print(f"[ACK de la parte {t.fragmento + 1}/{t.total} "
+                      f"{'a tiempo' if evento is not None else 'TARDÍO (ya no se esperaba)'}, "
+                      f"{time.time() - self._fin_tx:.2f} s después de terminar de transmitir]")
             return
         if t.tipo != trama.TIPO_DATOS:
             return                                  # anuncio o medición
@@ -670,7 +682,7 @@ class _FaroBase:
         difusion = envio.destino == DIFUSION
         n_msg = self._siguiente_n_msg()
         tramas = trama.fragmentar_v3(bytes(envio.datos), self.mac, envio.destino,
-                                     n_msg, envio.protocolo)
+                                     n_msg, envio.protocolo, self.datos_por_trama)
         largo_ack = len(trama.armar_ack(self.mac, envio.destino, 0, 0, 1))
         for i, t in enumerate(tramas):
             if difusion:                            # a todos: no hay ACK
@@ -689,6 +701,9 @@ class _FaroBase:
                     self._transmitir(t)
                     if self._esperar_ack(confirmado, largo_ack):
                         break
+                    if self.depurar:
+                        print(f"[sin ACK de la parte {i + 1}/{len(tramas)} "
+                              f"(intento {intento + 1} de {MAX_INTENTOS})]")
                 else:
                     return False                    # se rindió: el mensaje no llegó
             finally:
@@ -701,7 +716,13 @@ class _FaroBase:
         return n * por_byte
 
     def _esperar_ack(self, confirmado, largo_ack):
-        limite = time.time() + self._duracion_bytes(largo_ack) + 0.4
+        """Espera el ACK: lo que tarda el otro en enviarlo (calculado con lo
+        que de verdad tarda un byte en esta Pi, que puede ser más que la
+        teoría), más un margen para que lo procese."""
+        por_byte = self._duracion_bytes(1)
+        if self._s_por_byte:
+            por_byte = max(por_byte, 1.3 * self._s_por_byte)
+        limite = time.time() + largo_ack * por_byte + 0.8
         while time.time() < limite:
             self._revisar_panico()
             if confirmado.wait(0.01):
@@ -758,6 +779,13 @@ class _FaroBase:
         try:
             self._transmitir_bytes(datos)
             self.estadisticas["tramas_enviadas"] += 1
+            if len(datos) >= 10:                # medir cuánto tarda de verdad un byte
+                medido = (time.time() - inicio) / len(datos)
+                self._s_por_byte = (medido if self._s_por_byte is None
+                                    else 0.7 * self._s_por_byte + 0.3 * medido)
+                if self.depurar:
+                    print(f"[trama enviada: {len(datos)} bytes en {time.time() - inicio:.2f} s, "
+                          f"{medido * 1000:.1f} ms por byte]")
         finally:
             _borrar(datos)
             # que el LED se vea al menos 0.2 s, aunque la trama sea corta
@@ -775,7 +803,7 @@ class DispositivoLuzAdaptador(_FaroBase):
     def __init__(self, pin_emisor=38, pin_receptor=40, led_tx=13, led_rx=15,
                  boton=11, led_panico=16, t_us=600, frecuencia=38000, pausa=12,
                  archivo_mac=ARCHIVO_MAC, activo_alto=False, al_panico=None,
-                 depurar=False, pi=None, ciclo=33):
+                 depurar=False, pi=None, ciclo=33, datos_por_trama=trama.MAX_DATOS_V3):
         if pigpio is None:
             raise RuntimeError("Falta pigpio: en la Raspberry Pi instálelo con "
                                "'sudo apt install pigpio python3-pigpio'; en una laptop "
@@ -787,7 +815,7 @@ class DispositivoLuzAdaptador(_FaroBase):
                 raise ValueError(f"El pin físico {pin} {nombre} no es un GPIO")
         if not 1 <= ciclo <= 50:
             raise ValueError("El ciclo de la portadora debe estar entre 1 y 50 %")
-        super().__init__(t_us, pausa, archivo_mac, al_panico, depurar)
+        super().__init__(t_us, pausa, archivo_mac, al_panico, depurar, datos_por_trama)
         self.frecuencia = frecuencia
         self.ciclo = ciclo                          # % encendido: potencia de la luz
         self._nivel_ir = 1 if activo_alto else 0     # KY-022: 0 = recibiendo luz
