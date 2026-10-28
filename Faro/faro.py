@@ -13,6 +13,7 @@ Uso:
     python3 faro.py
     python3 faro.py --pausa 20          # más descanso entre bytes
     python3 faro.py --ciclo 15          # emitir más débil (si satura al otro Faro)
+    python3 faro.py --datos-por-trama 50  # tramas más cortas
     python3 faro.py --destino 3FA107C2  # hablarle a un Faro específico
     python3 faro.py --simulado          # sin Raspberry Pi: Faro falso por UDP
     python3 faro.py --simulado --velocidad 25 --perdida 0.05   # como el real
@@ -59,6 +60,9 @@ def argumentos_del_faro(p):
                    help="%% del tiempo que el LED está encendido en la portadora "
                         "(menos = luz más débil; por ejemplo 10 a 33). Solo afecta "
                         "a lo que emite este Faro")
+    g.add_argument("--datos-por-trama", type=int, default=110,
+                   help="bytes de datos por trama (1 a 110). Tramas más cortas "
+                        "fallan menos si la luz es débil; solo afecta a lo que envía")
     g.add_argument("--activo-alto", action="store_true",
                    help="usar si el receptor da 1 (no 0) al recibir infrarrojo")
     g.add_argument("--debug", action="store_true", help="mostrar cada trama")
@@ -82,7 +86,7 @@ def crear_faro(a, al_panico=None):
         pin_emisor=a.pin_emisor, pin_receptor=a.pin_receptor, led_tx=a.led_tx,
         led_rx=a.led_rx, boton=a.boton, led_panico=a.led_panico, t_us=a.t_us,
         pausa=a.pausa, activo_alto=a.activo_alto, al_panico=al_panico, depurar=a.debug,
-        ciclo=a.ciclo)
+        ciclo=a.ciclo, datos_por_trama=a.datos_por_trama)
 
 
 def main():
