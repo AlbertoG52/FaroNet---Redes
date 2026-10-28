@@ -54,6 +54,7 @@ Requiere el servicio pigpio corriendo:  sudo pigpiod
 (DispositivoLuzSimulado no necesita pigpio ni Raspberry Pi.)
 """
 import collections
+import functools
 import os
 import queue
 import random
@@ -101,10 +102,12 @@ VENTANA_MIN = 8         # espera aleatoria inicial: 0..7 ranuras
 VENTANA_MAX = 64        # la ventana se duplica en cada reintento, hasta 64
 MAX_INTENTOS = 5        # veces que se envía una trama antes de rendirse
 FIN_BYTE_T = 8          # un byte terminó si hubo 8T de silencio
+FLANCOS_POR_BYTE = 20   # cabecera (2) + 8 bits (16) + ráfaga final (2)
+ESPERA_BYTE_S = 0.15    # cuánto esperar el resto de un byte cuyos flancos llegan tarde
 TRAMA_INCOMPLETA_T = 60     # a mitad de trama, (pausa + 60)T sin luz: se perdió
 TRAMA_INCOMPLETA_S = 0.5    # a mitad de trama, 0.5 s sin bytes válidos: también
 ENTRE_TRAMAS_T = 80         # silencio mínimo entre dos tramas propias: (pausa + 80)T
-MENSAJE_INCOMPLETO_S = 60   # fragmentos sin completar por 60 s: se descartan
+MENSAJE_INCOMPLETO_S = 120  # un mensaje sin fragmentos NUEVOS por 120 s: se descarta
 RECORDAR_S = 120            # cuánto tiempo se recuerdan mensajes ya entregados
 ANUNCIO_CADA_S = 30         # cada cuánto se repite el anuncio de la MAC
 VECINO_ACTIVO_S = 90        # un vecino sigue "activo" si se oyó en los últimos 90 s
@@ -143,6 +146,7 @@ def rafaga(gpio, duracion_us, frecuencia, ciclo=33):
     return pulsos
 
 
+@functools.lru_cache(maxsize=1024)
 def pulsos_de_byte(gpio, byte, T, frecuencia, pausa_final=12, ciclo=33):
     """cabecera 3T+3T, 8 bits (T + pausa T ó 3T), fin T + pausa_final·T."""
     def pausa(us):
@@ -281,6 +285,10 @@ class _FaroBase:
         self._fin_tx = 0.0                   # hora en que terminó la última trama propia
         self._ultimo_anuncio = 0.0
         self._desarmador = trama.Desarmador()
+        # ¿Se corta una trama a medias por silencio medido con el reloj de la
+        # computadora? El Faro real lo mide con la hora exacta de los flancos
+        # (más confiable si la Pi está ocupada) y aquí solo usa el plazo de 0.5 s.
+        self._cortar_por_silencio = True
         self.observador = None               # función(trama, crc_ok): mediciones
         self.panico_activado = False
         self._activo = True
@@ -405,7 +413,12 @@ class _FaroBase:
     def canal_libre(self):
         """True si el receptor no vio luz en los últimos (pausa + CANAL_LIBRE_T)·T.
         Debe ser más largo que la pausa entre bytes; si no, el silencio entre
-        dos bytes de una trama ajena parecería un canal libre."""
+        dos bytes de una trama ajena parecería un canal libre.
+        Además, si el receptor está a mitad de una trama (ya vio su inicio
+        AA 7E y espera el resto), el canal sigue ocupado aunque entre dos
+        bytes haya un silencio más largo de lo normal."""
+        if self._desarmador.en_medio and time.time() - self._ultimo_byte < TRAMA_INCOMPLETA_S:
+            return False
         return time.time() - self._ultima_luz > (self.pausa + CANAL_LIBRE_T) * self.T / 1e6
 
     def activar_panico(self):
@@ -499,7 +512,7 @@ class _FaroBase:
         limite = (self.pausa + TRAMA_INCOMPLETA_T) * self.T / 1e6
         silencio = ahora - self._ultima_luz > limite
         if self._desarmador.en_medio and (
-                (silencio and ahora - self._ultimo_byte > limite)
+                (self._cortar_por_silencio and silencio and ahora - self._ultimo_byte > limite)
                 or ahora - self._ultimo_byte > TRAMA_INCOMPLETA_S):
             evento = self._desarmador.expirar()
             if evento:
@@ -575,6 +588,7 @@ class _FaroBase:
             self.estadisticas["duplicados"] += 1
             return
         parcial["partes"][t.fragmento] = bytearray(t.datos)
+        parcial["hora"] = time.time()               # el plazo cuenta desde el último fragmento
         if len(parcial["partes"]) == t.total:       # ¡llegaron todas las partes!
             completo = bytearray()
             for i in range(t.total):
@@ -785,6 +799,8 @@ class DispositivoLuzAdaptador(_FaroBase):
         self._estado_leds = {"tx": None, "rx": None}
         self._candado = threading.Lock()
         self._flancos = []
+        self._tick_fin_byte = None           # hora (tick) del final del último byte leído
+        self._cortar_por_silencio = False    # se hace con los ticks (ver _hilo_receptor)
 
         self.pi = pi if pi is not None else pigpio.pi()
         if not self.pi.connected:
@@ -831,25 +847,54 @@ class DispositivoLuzAdaptador(_FaroBase):
             p.write(g, 0)
         p.stop()
 
+    def _crear_onda(self, byte):
+        self.pi.wave_add_generic(pulsos_de_byte(self._g_tx, byte, self.T,
+                                                self.frecuencia, self.pausa, self.ciclo))
+        wid = self.pi.wave_create()
+        if wid < 0:
+            raise RuntimeError("pigpio no pudo crear la onda")
+        return wid
+
+    def _esperar_onda(self, hasta_que):
+        """Espera (revisando el pánico) hasta que hasta_que() sea verdadero."""
+        while not hasta_que():
+            if self.panico_activado:
+                self.pi.wave_tx_stop()
+                raise Panico()
+            time.sleep(0.001)
+
     def _transmitir_bytes(self, datos):
-        """Envía los bytes por la luz, uno por uno, como ondas de pigpio."""
+        """Envía los bytes por la luz, uno por uno, como ondas de pigpio.
+
+        Mientras sale un byte ya se deja en cola el siguiente (modo SYNC de
+        pigpio: empieza justo cuando termina el anterior). Así el silencio
+        entre bytes es exactamente pausa·T aunque Python se atrase; antes, si
+        la Pi estaba ocupada, el silencio se alargaba y el otro Faro creía que
+        la trama se había cortado."""
         p = self.pi
-        for byte in datos:
-            self._revisar_panico()
-            p.wave_add_generic(pulsos_de_byte(self._g_tx, byte, self.T,
-                                              self.frecuencia, self.pausa, self.ciclo))
-            wid = p.wave_create()
-            if wid < 0:
-                raise RuntimeError("pigpio no pudo crear la onda")
-            p.wave_send_once(wid)
-            try:
-                while p.wave_tx_busy():
-                    if self.panico_activado:
-                        p.wave_tx_stop()
-                        raise Panico()
-                    time.sleep(0.001)
-            finally:
-                p.wave_delete(wid)
+        sync = getattr(pigpio, "WAVE_MODE_ONE_SHOT_SYNC", None)
+        anterior = None
+        try:
+            for byte in datos:
+                self._revisar_panico()
+                wid = self._crear_onda(byte)
+                if anterior is None or sync is None:
+                    if anterior is not None:    # pigpio viejo: un byte a la vez
+                        self._esperar_onda(lambda: not p.wave_tx_busy())
+                        p.wave_delete(anterior)
+                    p.wave_send_once(wid)
+                else:
+                    p.wave_send_using_mode(wid, sync)
+                    # esperar a que empiece el nuevo (o a que todo termine)
+                    self._esperar_onda(lambda: p.wave_tx_at() == wid or not p.wave_tx_busy())
+                    p.wave_delete(anterior)
+                anterior = wid
+            self._esperar_onda(lambda: not p.wave_tx_busy())
+        finally:
+            if anterior is not None:
+                if p.wave_tx_busy():            # se interrumpió por un error
+                    p.wave_tx_stop()
+                p.wave_delete(anterior)
 
     # --- recepción ---
     def _al_cambiar_luz(self, _gpio, nivel, tick):
@@ -874,7 +919,25 @@ class DispositivoLuzAdaptador(_FaroBase):
                     if pigpio.tickDiff(ultimo_tick, self.pi.get_current_tick()) < FIN_BYTE_T * T:
                         continue                # el byte no ha terminado
                     lista, self._flancos[:] = list(self._flancos), []
-                for d in self._separar_bytes(lista):
+                    # Si la Pi estuvo ocupada, los avisos de flancos pueden llegar
+                    # tarde: el último byte puede estar incompleto todavía. Sus
+                    # flancos se dejan esperando el resto (hasta ESPERA_BYTE_S).
+                    inicio = self._inicio_ultimo_byte(lista)
+                    if (len(lista) - inicio < FLANCOS_POR_BYTE
+                            and time.time() - self._ultima_luz < ESPERA_BYTE_S):
+                        self._flancos[:0] = lista[inicio:]
+                        lista = lista[:inicio]
+                silencio_trama = (self.pausa + TRAMA_INCOMPLETA_T) * T
+                for d, tick_inicio, tick_fin in self._separar_bytes(lista):
+                    # Silencio largo (según la hora exacta de los flancos) a mitad
+                    # de una trama: esa trama se cortó y este byte es de otra.
+                    if (self._tick_fin_byte is not None and self._desarmador.en_medio
+                            and pigpio.tickDiff(self._tick_fin_byte, tick_inicio) > silencio_trama):
+                        evento = self._desarmador.expirar()
+                        if evento:
+                            self._avisar_mala()
+                            self._descartar(evento[1])
+                    self._tick_fin_byte = tick_fin
                     byte = decodificar(d, T)
                     if byte is None:
                         self.estadisticas["bytes_ilegibles"] += 1
@@ -884,24 +947,37 @@ class DispositivoLuzAdaptador(_FaroBase):
                 if self.depurar:
                     print(f"[error en el receptor: {e}]")
 
+    def _inicio_ultimo_byte(self, lista):
+        """Índice del primer flanco del último byte de la lista (después del
+        último silencio de más de 8T)."""
+        limite = FIN_BYTE_T * self.T
+        for j in range(len(lista) - 2, -1, -1):
+            if (lista[j][0] != self._nivel_ir
+                    and pigpio.tickDiff(lista[j][1], lista[j + 1][1]) > limite):
+                return j + 1
+        return 0
+
     def _separar_bytes(self, lista):
         """Corta la lista de flancos en bytes: cada silencio de más de 8T
         separa un byte del siguiente (por si llegaron varios juntos).
-        Devuelve una lista de duraciones [ráfaga, pausa, ráfaga, ...] por byte."""
+        Devuelve, por byte: (duraciones [ráfaga, pausa, ráfaga, ...],
+        tick del primer flanco, tick del último flanco)."""
         limite = FIN_BYTE_T * self.T
-        bytes_d, actual = [], []
+        bytes_d, actual, inicio = [], [], None
         for i in range(len(lista) - 1):
             nivel, tick = lista[i]
             dur = pigpio.tickDiff(tick, lista[i + 1][1])
             if not actual and nivel != self._nivel_ir:
                 continue                    # flanco suelto antes de una ráfaga
+            if not actual:
+                inicio = tick
             if nivel != self._nivel_ir and dur > limite:
-                bytes_d.append(actual)      # silencio largo: terminó el byte
+                bytes_d.append((actual, inicio, tick))   # silencio largo: terminó el byte
                 actual = []
                 continue
             actual.append(dur)
         if actual:
-            bytes_d.append(actual)
+            bytes_d.append((actual, inicio, lista[-1][1]))
         return bytes_d
 
 
