@@ -122,7 +122,7 @@ export async function leerEntrada(hex: string): Promise<EntradaDirectorio | null
   if (!ok) return null;
   let alias: string;
   try {
-    alias = new TextDecoder("utf-8", { fatal: true }).decode(b.slice(51, 51 + largoAlias));
+    alias = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(b.slice(51, 51 + largoAlias));
   } catch {
     return null;
   }
