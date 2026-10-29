@@ -465,6 +465,13 @@ class _FaroBase:
             self._cortar_transmision()
         except Exception:
             pass
+        try:
+            # Primero la indicación visual: las funciones registradas (por
+            # ejemplo el pánico de la mesh) pueden cerrar el Faro y la conexión
+            # con pigpio, y después ya no se podría encender el LED rojo.
+            self._indicar_panico()
+        except Exception:
+            pass
         self._borrar_todo()
         borrar_mac(self.archivo_mac)
         for funcion in list(self._borradores):      # llaves de otras capas
@@ -472,7 +479,6 @@ class _FaroBase:
                 funcion()
             except Exception:
                 pass
-        self._indicar_panico()                      # indicación visual
         with self._hay_recibidos:
             self._hay_recibidos.notify_all()
         if self.al_panico:
