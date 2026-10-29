@@ -110,6 +110,7 @@ ENTRE_TRAMAS_T = 80         # silencio mínimo entre dos tramas propias: (pausa 
 MENSAJE_INCOMPLETO_S = 120  # un mensaje sin fragmentos NUEVOS por 120 s: se descarta
 RECORDAR_S = 120            # cuánto tiempo se recuerdan mensajes ya entregados
 ANUNCIO_CADA_S = 30         # cada cuánto se repite el anuncio de la MAC
+MAC_VIEJA_S = 300           # tras rotar la MAC, se sigue aceptando la vieja 5 min
 VECINO_ACTIVO_S = 90        # un vecino sigue "activo" si se oyó en los últimos 90 s
 MAX_SIN_LEER = 256          # mensajes recibidos que nadie leyó (se borran los viejos)
 
@@ -277,6 +278,7 @@ class _FaroBase:
 
         self.mac = cargar_o_crear_mac(archivo_mac)
         self._macs_propias = {self.mac}     # incluye las anteriores (eco tardío)
+        self._macs_viejas = {}               # MAC anterior -> hora en que se dejó de usar
         self._n_msg = secrets.randbelow(256)
         self.vecinos = {}                    # MAC -> última vez que se escuchó
 
@@ -404,11 +406,24 @@ class _FaroBase:
         _guardar_mac(self.archivo_mac, nueva)
         self.mac = nueva
         self._macs_propias.add(nueva)
+        # Los vecinos tardan en enterarse de la MAC nueva (el aviso cruza la
+        # luz y se puede perder): por un rato se siguen aceptando y
+        # confirmando las tramas que llegan a la MAC vieja.
+        self._macs_viejas[vieja] = time.time()
         if anunciar:
             self.anunciar()
         for funcion in list(self._al_cambiar_mac):
             funcion(vieja, nueva)
         return nueva
+
+    def _es_mac_vieja(self, mac):
+        hora = self._macs_viejas.get(mac)
+        if hora is None:
+            return False
+        if time.time() - hora > MAC_VIEJA_S:
+            del self._macs_viejas[mac]
+            return False
+        return True
 
     def al_cambiar_mac(self, funcion):
         """Registra funcion(mac_vieja, mac_nueva), llamada al rotar la MAC."""
@@ -519,6 +534,7 @@ class _FaroBase:
         self.vecinos.clear()
         self.mac = bytes(4)
         self._macs_propias.clear()
+        self._macs_viejas.clear()
 
     def _revisar_panico(self):
         if self.panico_activado:
@@ -565,7 +581,7 @@ class _FaroBase:
         if t.origen in self._macs_propias:          # mi propia luz reflejada
             self.estadisticas["ecos"] += 1
             return
-        if t.destino != self.mac and t.destino != DIFUSION:
+        if t.destino != self.mac and t.destino != DIFUSION and not self._es_mac_vieja(t.destino):
             return                                  # no es para mí
         if t.version < 2:
             self._descartar(f"versión {t.version}: no tiene número de mensaje")
@@ -598,8 +614,9 @@ class _FaroBase:
             return                                  # anuncio o medición
 
         clave = (t.origen, t.n_msg)
-        if t.destino == self.mac:                   # a mí directamente: confirmar
-            self._cola_acks.put((t.origen, t.n_msg, t.fragmento, t.total))
+        if t.destino != DIFUSION:                   # a mí directamente: confirmar
+            # el ACK sale con la MAC a la que vino la trama (por si era la vieja)
+            self._cola_acks.put((t.destino, t.origen, t.n_msg, t.fragmento, t.total))
         if clave in self._entregados:               # reenvío de algo ya entregado
             self.estadisticas["duplicados"] += 1
             return
@@ -778,11 +795,11 @@ class _FaroBase:
         envio_alguna = False
         while True:
             try:
-                origen, n_msg, fragmento, total = self._cola_acks.get_nowait()
+                propia, origen, n_msg, fragmento, total = self._cola_acks.get_nowait()
             except queue.Empty:
                 return envio_alguna
             envio_alguna = True
-            self._transmitir(trama.armar_ack(self.mac, origen, n_msg, fragmento, total))
+            self._transmitir(trama.armar_ack(propia, origen, n_msg, fragmento, total))
             self.estadisticas["acks_enviados"] += 1
 
     def _transmitir(self, t):
