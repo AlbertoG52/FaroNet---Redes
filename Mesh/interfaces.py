@@ -128,13 +128,32 @@ class InterfazFaro:
 
     El Faro va a unos 25 bytes/s: por eso los HELLO y las RUTAS se mandan
     cada 90 s y, si ya hay muchos envíos esperando, se descartan los de
-    control (los de datos siempre se encolan)."""
+    control (los de datos siempre se encolan).
+
+    Cifrado del enlace (opcional, recomendado): con `clave_enlace` (la misma
+    frase en los dos Faros) cada paquete viaja dentro de un SecretBox de
+    libsodium. Así un observador de la luz no ve ni los HELLO ni las RUTAS, que
+    llevan los ids de los nodos; sin esto, rotar la MAC no impediría seguir al
+    Faro, porque el HELLO dice qué nodo está detrás. También impide que alguien
+    que no tenga la frase inyecte paquetes por la luz. Agrega 40 bytes por
+    paquete (220 -> 260, 550 -> 590): todos siguen midiendo lo mismo."""
 
     MAX_PENDIENTES = 12
+    SAL_ENLACE = b"faronet-enlace-1"          # 16 bytes, fija: la frase es el secreto
 
-    def __init__(self, faro, costo=10, intervalo_hello=90, intervalo_rutas=90):
+    def __init__(self, faro, costo=10, intervalo_hello=90, intervalo_rutas=90, clave_enlace=None):
         from DispositivoLuzAdaptador import DIFUSION, PROTO_FARONET
         self._DIFUSION, self._PROTO = DIFUSION, PROTO_FARONET
+        self._caja = None
+        if clave_enlace:
+            import nacl.pwhash
+            import nacl.secret
+            clave = nacl.pwhash.argon2id.kdf(
+                32, clave_enlace.encode("utf-8"), self.SAL_ENLACE,
+                opslimit=nacl.pwhash.argon2id.OPSLIMIT_INTERACTIVE,
+                memlimit=nacl.pwhash.argon2id.MEMLIMIT_INTERACTIVE)
+            self._caja = nacl.secret.SecretBox(clave)
+        self.descartados_enlace = 0
         self.faro = faro
         self.nombre = "faro"
         self.costo = costo
@@ -145,7 +164,11 @@ class InterfazFaro:
         self._lock = threading.Lock()
 
     def __str__(self):
-        return "faro (luz)"
+        return "faro (luz, enlace cifrado)" if self._caja else "faro (luz)"
+
+    @property
+    def cifrado(self):
+        return self._caja is not None
 
     def iniciar(self, nodo):
         self.nodo = nodo
@@ -154,7 +177,15 @@ class InterfazFaro:
         self.faro.registrar_borrado(nodo.panico)
 
     def _al_recibir(self, mensaje):
-        self.nodo.recibir_crudo(mensaje.datos, self, bytes(mensaje.origen))
+        datos = mensaje.datos
+        if self._caja is not None:
+            import nacl.exceptions
+            try:
+                datos = self._caja.decrypt(bytes(datos))
+            except nacl.exceptions.CryptoError:
+                self.descartados_enlace += 1      # otra frase, o alguien inyectando
+                return
+        self.nodo.recibir_crudo(datos, self, bytes(mensaje.origen))
 
     def ocupada(self):
         with self._lock:
@@ -164,6 +195,8 @@ class InterfazFaro:
     def _encolar(self, datos, destino, es_control):
         if es_control and self.ocupada():
             return None
+        if self._caja is not None:
+            datos = bytes(self._caja.encrypt(bytes(datos)))
         try:
             envio = self.faro.enviar(datos, destino, self._PROTO)
         except Exception:
@@ -181,6 +214,16 @@ class InterfazFaro:
 
     def anunciar(self, datos, direcciones_vecinos=()):
         return self._encolar(datos, self._DIFUSION, True)
+
+    def panico(self):
+        """Pánico por software: lo mismo que el botón físico del Faro (borra la
+        MAC, enciende el LED rojo). El Faro, a su vez, llama a nodo.panico(),
+        que ya está en marcha y no hace nada más."""
+        try:
+            self.faro.activar_panico()
+        except Exception:
+            pass
+        self._caja = None
 
     def cerrar(self):
         try:

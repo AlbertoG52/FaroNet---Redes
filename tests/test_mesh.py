@@ -268,6 +268,16 @@ class PruebasRed(unittest.TestCase):
         self.assertTrue(m["verificado"])
         self.assertEqual(m["alias"], "a1")
 
+    def test_repeticion_de_un_privado_se_descarta(self):
+        """Un nodo malicioso reenvía la misma celda: el destinatario la ve una sola vez."""
+        s = self.servicios["b1"]
+        a2 = self.nodos["a2"]
+        datos = M.armar_privado("una sola vez", identidad=a2.identidad,
+                                llave_destino=self.nodos["b1"].identidad.publica)
+        s._al_privado(datos)
+        s._al_privado(datos)                                   # la repetición
+        self.assertEqual(sum(1 for m in s.buzon if m["texto"] == "una sola vez"), 1)
+
     def test_publicacion_llega_a_todos(self):
         r = self.servicios["b1"].atender({"cmd": "publicar", "tema": "redes", "texto": "a todos"})
         self.assertTrue(r["ok"], r)
@@ -307,3 +317,74 @@ class PruebasRed(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------- enlace de luz
+class FaroFalso:
+    """Imita la interfaz de DispositivoLuzAdaptador que usa InterfazFaro."""
+
+    def __init__(self):
+        self.enviados, self.oyente, self.borradores = [], None, []
+        self.panico_activado = False
+
+    def al_recibir(self, protocolo, funcion):
+        self.oyente = funcion
+
+    def al_cambiar_mac(self, funcion):
+        pass
+
+    def registrar_borrado(self, funcion):
+        self.borradores.append(funcion)
+
+    def enviar(self, datos, destino, protocolo):
+        self.enviados.append(bytes(datos))
+        e = threading.Event()
+        e.set()
+        return type("Envio", (), {"listo": e})()
+
+    def activar_panico(self):
+        if self.panico_activado:
+            return
+        self.panico_activado = True
+        for f in self.borradores:
+            f()
+
+    def cerrar(self):
+        pass
+
+
+class PruebasEnlaceFaro(unittest.TestCase):
+    def armar(self, clave):
+        from interfaces import InterfazFaro
+        faro = FaroFalso()
+        interfaz = InterfazFaro(faro, clave_enlace=clave)
+        nodo = Nodo(Identidad(), [interfaz], alias="x")
+        interfaz.iniciar(nodo)
+        return faro, interfaz, nodo
+
+    def test_sin_clave_el_observador_ve_el_id(self):
+        faro, interfaz, nodo = self.armar(None)
+        nodo.anunciar_en(interfaz)
+        self.assertIn(nodo.id, faro.enviados[-1])           # por eso conviene cifrar
+
+    def test_con_clave_el_observador_no_ve_nada(self):
+        faro, interfaz, nodo = self.armar("frase del enlace")
+        nodo.anunciar_en(interfaz)
+        crudo = faro.enviados[-1]
+        self.assertNotIn(nodo.id, crudo)
+        self.assertEqual(len(crudo), P.TAM_CONTROL + 40)      # tamaño fijo también cifrado
+        # el otro Faro, con la misma frase, lo entiende; con otra, lo descarta
+        faro2, interfaz2, nodo2 = self.armar("frase del enlace")
+        faro3, interfaz3, nodo3 = self.armar("otra frase")
+        mensaje = type("M", (), {"datos": crudo, "origen": b"\x01\x02\x03\x04"})()
+        faro2.oyente(mensaje)
+        faro3.oyente(mensaje)
+        self.assertIn(nodo.id, nodo2.vecinos)
+        self.assertNotIn(nodo.id, nodo3.vecinos)
+        self.assertEqual(interfaz3.descartados_enlace, 1)
+
+    def test_panico_por_software_borra_tambien_el_faro(self):
+        faro, interfaz, nodo = self.armar(None)
+        nodo.panico()
+        self.assertTrue(faro.panico_activado)                # MAC borrada y LED rojo
+        self.assertTrue(nodo.panico_activado)

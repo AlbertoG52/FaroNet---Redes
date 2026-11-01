@@ -24,6 +24,8 @@ Este código va **encima** de la Capa 1 (`Faro/DispositivoLuzAdaptador.py`) y la
 | `App/chat.py` | Cliente de terminal (todos los parámetros por línea de comandos) |
 | `faronet_nodo.py` | Arranca un nodo |
 | `demo_red.py` | Levanta una red de 7 nodos en una sola computadora |
+| `pi_comunidad.py` | Levanta una comunidad completa (Faro + 2 nodos) dentro de una Raspberry Pi |
+| `pruebas/espia_luz.py` | Observador de la luz simulada: comprueba qué metadatos ve |
 | `tests/test_mesh.py` | 18 pruebas automáticas |
 | `Gateway/`, `Edge/` | Gateway y Worker de Cloudflare: ver `Edge/LEEME.md` |
 
@@ -82,7 +84,7 @@ publicación:       emisor → R1 → R2 → R3 ══> R3 la inunda en toda la 
 | Cifrado extremo a extremo | PyNaCl: SealedBox + Box (privados), SecretBox (temas privados) |
 | Sin criptografía propia | Solo primitivas de libsodium; el diseño del protocolo es nuestro |
 | Relleno a tamaños fijos | 220 / 550 B por paquete; 536 B por celda; 316 / 365 B por mensaje |
-| MAC rotable | El nodo rota la MAC del Faro cada 30 min (`--rotar-mac-cada`) y avisa con HELLO |
+| MAC rotable | El nodo rota la MAC del Faro cada 30 min (`--rotar-mac-cada`) y avisa con HELLO. Con `--clave-enlace` el enlace de luz va cifrado y un observador no puede asociar la MAC nueva con el nodo |
 | Botón de pánico | El Faro llama a `nodo.panico()`: borra llaves, directorio, rutas, buzón, temas y claves, y detiene el nodo |
 | Sin registros | No hay bitácoras; `--depurar` imprime solo tipos y cantidades, nunca IP, MAC ni ids |
 | Mensajes con TTL | Buzón y publicaciones vencen; entradas del directorio a los 30 min |

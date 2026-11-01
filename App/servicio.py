@@ -39,6 +39,7 @@ class ServicioChat:
     def __init__(self, nodo):
         self.nodo = nodo
         self.buzon = []                     # dicts de mensajes privados
+        self._privados_vistos = {}          # id del mensaje -> vence (contra repeticiones)
         self.publicaciones = {}             # id_msg -> Publicacion
         self.temas_privados = {}            # etiqueta -> (nombre, clave)
         self._claves = {}                   # (nombre, frase) -> clave (evita repetir Argon2)
@@ -66,6 +67,15 @@ class ServicioChat:
             self._avisar({"evento": "error", "detalle": f"mensaje privado ilegible: {e}"})
             return
         ahora = time.time()
+        # Protección contra repetición (replay): un nodo malicioso podría grabar
+        # una celda y reenviarla; el mismo id de mensaje no se entrega dos veces.
+        # Tampoco se aceptan mensajes viejos (enviados hace más que su TTL).
+        if m.enviado + m.ttl < ahora or m.enviado > ahora + TOLERANCIA_RELOJ_S:
+            return
+        with self._lock:
+            if m.id_msg in self._privados_vistos:
+                return
+            self._privados_vistos[m.id_msg] = m.enviado + m.ttl
         item = {"texto": m.texto, "enviado": m.enviado, "recibido": int(ahora),
                 "vence": int(ahora + m.ttl),
                 "remitente": m.remitente.hex() if m.remitente else None,
@@ -129,6 +139,8 @@ class ServicioChat:
             ahora = time.time()
             with self._lock:
                 self.buzon = [m for m in self.buzon if m["vence"] > ahora]
+                for k in [k for k, v in self._privados_vistos.items() if v <= ahora]:
+                    del self._privados_vistos[k]
                 for k in [k for k, p in self.publicaciones.items() if p.vence <= ahora]:
                     del self.publicaciones[k]
 
@@ -136,6 +148,7 @@ class ServicioChat:
         """Pánico: borra buzón, publicaciones y claves de temas."""
         with self._lock:
             self.buzon.clear()
+            self._privados_vistos.clear()
             self.publicaciones.clear()
             self.temas_privados.clear()
             self._claves.clear()

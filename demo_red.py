@@ -14,7 +14,8 @@ Luego, en otras terminales (un chat por nodo):
     python3 App/chat.py --api 7101 interactivo      # a1
     python3 App/chat.py --api 7111 interactivo      # b1
 
-Ctrl+C detiene todos los nodos. Las salidas de cada nodo quedan en demo_logs/.
+Ctrl+C detiene todos los nodos. Por privacidad (sin registros), lo que imprime cada
+nodo NO se guarda; con --guardar-salida queda en demo_logs/ para depurar.
 """
 import argparse
 import os
@@ -39,6 +40,10 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--lento", action="store_true", help="Faro simulado a 25 B/s con 5 %% de pérdida")
     p.add_argument("--worker", default=None, help="URL del Worker: faroB actúa como gateway")
+    p.add_argument("--clave-enlace", default=None, metavar="FRASE",
+                   help="cifrar el enlace de luz simulado entre faroA y faroB")
+    p.add_argument("--guardar-salida", action="store_true",
+                   help="guardar lo que imprime cada nodo en demo_logs/ (solo para depurar)")
     a = p.parse_args()
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     logs = os.path.join(AQUI, "demo_logs")
@@ -55,7 +60,10 @@ def main():
             cmd += ["--worker", a.worker]
         if a.lento and "--faro" in extra:
             cmd += ["--velocidad", "25", "--perdida", "0.05"]
-        salida = open(os.path.join(logs, f"{alias}.log"), "w")
+        if a.clave_enlace and "--faro" in extra:
+            cmd += ["--clave-enlace", a.clave_enlace]
+        salida = (open(os.path.join(logs, f"{alias}.log"), "w") if a.guardar_salida
+                  else subprocess.DEVNULL)
         procesos.append((alias, api, subprocess.Popen(cmd, stdout=salida, stderr=subprocess.STDOUT)))
         print(f"  {alias:6} API {api}   python3 App/chat.py --api {api} interactivo")
     if a.worker:
@@ -70,7 +78,7 @@ def main():
             time.sleep(1)
             for alias, _, proc in procesos:
                 if proc.poll() is not None:
-                    print(f"[el nodo {alias} terminó; vea demo_logs/{alias}.log]")
+                    print(f"[el nodo {alias} terminó]")
                     procesos = [x for x in procesos if x[2] is not proc]
     except KeyboardInterrupt:
         pass

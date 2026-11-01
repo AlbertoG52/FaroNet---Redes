@@ -57,7 +57,8 @@ def crear_faro(a):
     return DispositivoLuzAdaptador(pin_emisor=a.pin_emisor, pin_receptor=a.pin_receptor,
                                    led_tx=a.led_tx, led_rx=a.led_rx, boton=a.boton,
                                    led_panico=a.led_panico, t_us=a.t_us, pausa=a.pausa,
-                                   activo_alto=a.activo_alto, depurar=a.debug_faro)
+                                   activo_alto=a.activo_alto, depurar=a.debug_faro,
+                                   ciclo=a.ciclo, datos_por_trama=a.datos_por_trama)
 
 
 def argumentos():
@@ -111,11 +112,20 @@ def argumentos():
     f.add_argument("--led-panico", type=int, default=16)
     f.add_argument("--activo-alto", action="store_true")
     f.add_argument("--debug-faro", action="store_true", help="mostrar cada trama del Faro")
+    f.add_argument("--ciclo", type=int, default=33,
+                   help="real: %% encendido de la portadora (menos = luz más débil)")
+    f.add_argument("--datos-por-trama", type=int, default=110,
+                   help="real: bytes de datos por trama (37 a 110; más corto = más robusto)")
+    f.add_argument("--clave-enlace", default=None, metavar="FRASE",
+                   help="cifra el enlace de luz (la MISMA frase en los dos Faros); "
+                        "oculta HELLO y RUTAS a quien observe la luz")
     return p.parse_args()
 
 
 def main():
     a = argumentos()
+    if len(a.alias.encode("utf-8")) > 16:
+        sys.exit("--alias puede tener como máximo 16 bytes (las tildes y la ñ ocupan 2)")
     if a.sin_udp and a.faro == "ninguno":
         sys.exit("El nodo necesita al menos una interfaz: quite --sin-udp o use --faro")
     nombre = a.alias or "nodo"
@@ -137,7 +147,11 @@ def main():
             interfaces.append(InterfazUDP(a.medio, a.ip, a.puerto, a.vecino,
                                           descubrir=not a.sin_descubrir, costo=costo))
         if a.faro != "ninguno":
-            interfaces.append(InterfazFaro(crear_faro(a), costo=a.costo_faro))
+            if not 37 <= a.datos_por_trama <= 110:
+                sys.exit("--datos-por-trama debe estar entre 37 y 110 (un paquete de 550 B "
+                         "debe caber en las 15 tramas de un mensaje del Faro)")
+            interfaces.append(InterfazFaro(crear_faro(a), costo=a.costo_faro,
+                                           clave_enlace=a.clave_enlace))
     except (OSError, ValueError, RuntimeError) as e:
         for i in interfaces:
             i.cerrar()

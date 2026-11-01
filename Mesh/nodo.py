@@ -444,6 +444,9 @@ class Nodo:
             self._vistos.clear()
         self.entrada_propia = None
         for interfaz in self.interfaces:
+            if hasattr(interfaz, "panico"):
+                interfaz.panico()                  # el Faro borra su MAC y enciende el LED rojo
+        for interfaz in self.interfaces:
             try:
                 interfaz.cerrar()
             except Exception:
