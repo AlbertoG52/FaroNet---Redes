@@ -481,7 +481,22 @@ class Nodo:
         return salida
 
     def info(self):
+        faros = {}
+        for interfaz in self.interfaces:            # lo que pasa DENTRO de la luz (Capa 1)
+            faro = getattr(interfaz, "faro", None)
+            if faro is None:
+                continue
+            try:
+                e = dict(faro.estadisticas)
+                cola = getattr(faro, "_cola_salida", None)
+                e["en_cola_capa1"] = cola.qsize() if cola is not None else -1
+                e["pendientes_mesh"] = len([x for x in getattr(interfaz, "_pendientes", [])
+                                            if not x.listo.is_set()])
+                faros[interfaz.nombre] = e
+            except Exception:
+                pass
         return {"id": self.id.hex(), "alias": self.alias, "gateway": self.gateway,
+                "faro": faros,
                 "interfaces": [str(i) for i in self.interfaces],
                 "vecinos": len(self.vecinos), "rutas": len(self.rutas.listar()),
                 "directorio": len(self.directorio), "estadisticas": dict(self.estadisticas),
