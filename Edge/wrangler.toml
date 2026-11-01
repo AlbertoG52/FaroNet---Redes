@@ -13,7 +13,7 @@ enabled = false
 [vars]
 # Llave pública Ed25519 del gateway (64 caracteres hex). Se obtiene en la Pi B con:
 #   python3 faronet_nodo.py --alias faroB --llave-gateway
-GATEWAY_LLAVE = "794c5cd15c94ef989475a9311a2c48a8c1f803892d1f0ad335f6976d9d33547b" #llave del faro B de la demo(hay que cambiarla por la de Pi B)
+GATEWAY_LLAVE = "fe0e29fcbcf3916f3ad9aa3e418d3ac679f105238ce1e7186b5de79ee4d0d634" #llave del faro B 
 
 [[durable_objects.bindings]]
 name = "SALAS"
