@@ -101,6 +101,7 @@ RANURA_T = 20           # duración de una "ranura" de espera aleatoria (12 ms)
 VENTANA_MIN = 8         # espera aleatoria inicial: 0..7 ranuras
 VENTANA_MAX = 64        # la ventana se duplica en cada reintento, hasta 64
 MAX_INTENTOS = 5        # veces que se envía una trama antes de rendirse
+MARGEN_ECO_US = 1000    # el receptor entrega su propia luz con hasta ~1 ms de retraso
 FIN_BYTE_T = 8          # un byte terminó si hubo 8T de silencio
 FLANCOS_POR_BYTE = 20   # cabecera (2) + 8 bits (16) + ráfaga final (2)
 ESPERA_BYTE_S = 0.15    # cuánto esperar el resto de un byte cuyos flancos llegan tarde
@@ -171,6 +172,12 @@ def pulsos_de_byte(gpio, byte, T, frecuencia, pausa_final=12, ciclo=33):
             (PAUSA_BIT1_T if bit else PAUSA_BIT0_T) * T)
     p += rafaga(gpio, T, frecuencia, ciclo) + pausa(pausa_final * T)
     return p
+
+
+@functools.lru_cache(maxsize=1024)
+def _duracion_us(gpio, byte, T, frecuencia, pausa_final=12, ciclo=33):
+    """Duración total de la onda de un byte (ráfagas y silencios), en µs."""
+    return sum(p.delay for p in pulsos_de_byte(gpio, byte, T, frecuencia, pausa_final, ciclo))
 
 
 def decodificar(d, T):
@@ -507,6 +514,12 @@ class _FaroBase:
     def _cortar_transmision(self):
         pass
 
+    def _empieza_tx(self):
+        pass
+
+    def _termina_tx(self):
+        pass
+
     def _led(self, cual, encendido):
         pass
 
@@ -813,6 +826,7 @@ class _FaroBase:
         datos = bytearray(t)
         self._led("tx", True)
         inicio = time.time()
+        self._empieza_tx()
         try:
             self._transmitir_bytes(datos)
             self.estadisticas["tramas_enviadas"] += 1
@@ -824,6 +838,7 @@ class _FaroBase:
                     print(f"[trama enviada: {len(datos)} bytes en {time.time() - inicio:.2f} s, "
                           f"{medido * 1000:.1f} ms por byte]")
         finally:
+            self._termina_tx()                  # antes de la espera del LED: ahí puede venir el ACK
             _borrar(datos)
             # que el LED se vea al menos 0.2 s, aunque la trama sea corta
             if not self.panico_activado:
@@ -864,6 +879,11 @@ class DispositivoLuzAdaptador(_FaroBase):
         self._estado_leds = {"tx": None, "rx": None}
         self._candado = threading.Lock()
         self._flancos = []
+        # Ventana (en ticks) de la última transmisión propia: lo que el receptor
+        # ve en ese rato es la propia luz reflejada (el enlace es half-duplex).
+        self._tx_desde = None
+        self._tx_hasta = None
+        self._ultima_onda = None             # (tick en que se envió, duración en µs)
         self._tick_fin_byte = None           # hora (tick) del final del último byte leído
         self._cortar_por_silencio = False    # se hace con los ticks (ver _hilo_receptor)
 
@@ -938,6 +958,9 @@ class DispositivoLuzAdaptador(_FaroBase):
             self._revisar_panico()
             wid = self._crear_onda(byte)
             try:
+                duracion = _duracion_us(self._g_tx, byte, self.T, self.frecuencia,
+                                        self.pausa, self.ciclo)
+                self._ultima_onda = (p.get_current_tick(), duracion)
                 p.wave_send_once(wid)
                 self._esperar_onda(lambda: not p.wave_tx_busy())
             finally:
@@ -949,7 +972,55 @@ class DispositivoLuzAdaptador(_FaroBase):
             return
         self._ultima_luz = time.time()
         with self._candado:
+            if self._es_luz_propia(tick):
+                return
             self._flancos.append((nivel, tick))
+
+    def _empieza_tx(self):
+        with self._candado:
+            self._tx_desde = self.pi.get_current_tick()
+            self._tx_hasta = None
+
+    def _termina_tx(self):
+        # La ventana termina con la ÚLTIMA RÁFAGA, no con el silencio de
+        # pausa·T que va al final de cada byte: el ACK del otro Faro puede
+        # empezar dentro de ese silencio.
+        with self._candado:
+            if self._tx_desde is None:
+                return
+            ahora = self.pi.get_current_tick()
+            if self._ultima_onda is not None:
+                inicio, duracion = self._ultima_onda
+                fin_luz = (inicio + duracion - self.pausa * self.T) & 0xFFFFFFFF
+                if pigpio.tickDiff(fin_luz, ahora) < 1 << 31:   # ya pasó
+                    ahora = fin_luz
+            self._tx_hasta = ahora
+            self._ultima_onda = None
+
+    def _es_luz_propia(self, tick):
+        """¿Este flanco ocurrió mientras este Faro transmitía? Entonces es su
+        propia luz reflejada, que el receptor suele ver deformada: se ignora.
+        Si no, un reflejo incompleto dejaba al receptor "a mitad de trama" y
+        el ACK del otro Faro, que llega justo después, se perdía pegado a él."""
+        desde = self._tx_desde
+        if desde is None:
+            return False
+        d = pigpio.tickDiff(desde, tick)
+        if d >= 1 << 31:                        # el flanco es anterior a la transmisión
+            return False
+        if self._tx_hasta is not None:          # la transmisión ya terminó
+            return d <= pigpio.tickDiff(desde, self._tx_hasta) + MARGEN_ECO_US
+        # Todavía transmitiendo: solo es luz propia lo que cae en las ráfagas
+        # del byte que está saliendo (o antes). Lo que llega en el silencio
+        # final de un byte es del otro Faro (por ejemplo, su ACK).
+        onda = self._ultima_onda
+        if onda is None:
+            return True
+        inicio, duracion = onda
+        d2 = pigpio.tickDiff(inicio, tick)
+        if d2 >= 1 << 31:                       # antes del byte actual: un byte anterior
+            return True
+        return d2 <= duracion - self.pausa * self.T + MARGEN_ECO_US
 
     def _hilo_receptor(self):
         T = self.T
