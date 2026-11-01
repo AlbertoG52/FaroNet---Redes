@@ -46,6 +46,8 @@ def main():
     p.add_argument("--ciclo", type=int, default=33)
     p.add_argument("--datos-por-trama", type=int, default=110)
     p.add_argument("--clave-enlace", default=None, help="IGUAL en las dos Pi (recomendado)")
+    p.add_argument("--intervalo-faro", type=float, default=None,
+                   help="s entre HELLO/RUTAS por la luz, IGUAL en las dos Pi (300 por omisión)")
     p.add_argument("--worker", default=None, help="solo en la Pi B: URL del sitio de Cloudflare")
     p.add_argument("--depurar", action="store_true", help="ver eventos del nodo del Faro")
     a = p.parse_args()
@@ -63,6 +65,8 @@ def main():
         cmd_faro += ["--faro-nombre", faro_alias]
     if a.clave_enlace:
         cmd_faro += ["--clave-enlace", a.clave_enlace]
+    if a.intervalo_faro:
+        cmd_faro += ["--intervalo-faro", str(a.intervalo_faro)]
     if a.worker:
         cmd_faro += ["--worker", a.worker]
     if a.depurar:

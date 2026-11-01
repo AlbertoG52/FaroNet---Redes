@@ -98,6 +98,10 @@ def argumentos():
     f = p.add_argument_group("Faro (enlace de luz entre comunidades)")
     f.add_argument("--faro", choices=("ninguno", "real", "simulado"), default="ninguno")
     f.add_argument("--costo-faro", type=int, default=10)
+    f.add_argument("--intervalo-faro", type=float, default=None, metavar="S",
+                   help="cada cuántos s se mandan HELLO y RUTAS por la luz (IGUAL en los dos "
+                        "Faros). Por omisión 300 con el Faro real (la luz va a ~21 B/s y con "
+                        "90 s el control ocupaba casi todo el enlace) y 90 con el simulado")
     f.add_argument("--pausa", type=int, default=12, help="igual en los dos Faros")
     f.add_argument("--t-us", type=int, default=600, help="unidad T en µs (igual en los dos)")
     f.add_argument("--velocidad", type=float, default=None,
@@ -150,7 +154,9 @@ def main():
             if not 37 <= a.datos_por_trama <= 110:
                 sys.exit("--datos-por-trama debe estar entre 37 y 110 (un paquete de 550 B "
                          "debe caber en las 15 tramas de un mensaje del Faro)")
+            intervalo = a.intervalo_faro or (300 if a.faro == "real" else 90)
             interfaces.append(InterfazFaro(crear_faro(a), costo=a.costo_faro,
+                                           intervalo_hello=intervalo, intervalo_rutas=intervalo,
                                            clave_enlace=a.clave_enlace))
     except (OSError, ValueError, RuntimeError) as e:
         for i in interfaces:
