@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-verificar_directorio.py - Comprueba, por su cuenta, la réplica pública del
-directorio de nodos que publica el Worker.
+verificar_directorio.py - Comprueba de forma independiente la réplica pública
+del directorio de nodos que publica el Worker.
 
-Para cada entrada verifica con PyNaCl:
+Para cada entrada, el programa verifica con PyNaCl:
     - la firma Ed25519 sobre la forma binaria de la entrada;
-    - que el id sea BLAKE2b(llave pública)[:8] (nadie puede usar el id de otro);
+    - que el id sea BLAKE2b(llave pública)[:8], de modo que nadie use el id
+      de otro nodo;
     - que los campos que muestra el JSON coincidan con la forma binaria.
-Así no hay que confiar en el Worker ni en Cloudflare.
+Así no hace falta confiar en el Worker ni en Cloudflare.
 
     python3 Gateway/verificar_directorio.py --worker https://faronet.xxx.workers.dev
 """

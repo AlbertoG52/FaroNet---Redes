@@ -44,7 +44,7 @@ cd Edge && node prueba/simulacion.ts           # 11 pruebas del Worker
 ```
 Si Node no está instalado, las pruebas del Worker aparecen como *skipped*.
 
-### E2. El Worker REAL en tu laptop (`wrangler dev`) con la mesh simulada
+### E2. El Worker real en una computadora local (`wrangler dev`) con la mesh simulada
 ```
 cd Edge
 npm install                                    # una sola vez
@@ -61,13 +61,13 @@ python3 demo_red.py --worker http://127.0.0.1:8787
 python3 App/chat.py --api 7101 interactivo
 #   /tema redes   y escriba algo
 ```
-Lista de chequeo:
-- [ ] Abrir **http://127.0.0.1:8787**: aparece `#redes`.
-- [ ] Abrir la sala `/sala/redes`. Al publicar otra cosa desde el chat, aparece **sola, en vivo**, sin recargar.
-- [ ] `/tema/redes/feed.xml` muestra el feed Atom.
-- [ ] Un tema privado (`/tema club frase`) y los privados **no aparecen** en el Worker.
-- [ ] `python3 Gateway/verificar_directorio.py --worker http://127.0.0.1:8787` dice `7 entradas verificadas, 0 con problemas`.
-- [ ] Buzón muerto:
+Qué se debe observar:
+- Abrir **http://127.0.0.1:8787**: aparece `#redes`.
+- Abrir la sala `/sala/redes`. Al publicar otra cosa desde el chat, aparece **sola, en vivo**, sin recargar.
+- `/tema/redes/feed.xml` muestra el feed Atom.
+- Un tema privado (`/tema club frase`) y los privados **no aparecen** en el Worker.
+- `python3 Gateway/verificar_directorio.py --worker http://127.0.0.1:8787` dice `7 entradas verificadas, 0 con problemas`.
+- Buzón muerto:
   ```
   python3 Gateway/buzon_muerto.py --worker http://127.0.0.1:8787 depositar --frase "frase larga" --mensaje "hola"
   python3 Gateway/buzon_muerto.py --worker http://127.0.0.1:8787 recoger --frase "frase larga"
@@ -85,7 +85,7 @@ Lista de chequeo:
    ```
    python3 faronet_nodo.py --alias faroB --llave-gateway
    ```
-4. Ponerla en `wrangler.toml` (`GATEWAY_LLAVE = "..."`) y hacer commit. No es secreta.
+4. Ponerla en `wrangler.toml` (`GATEWAY_LLAVE = "..."`) y versionarla. No es secreta.
 5. Desplegar con `npx wrangler deploy`. Al final muestra la URL, `https://faronet.<su-cuenta>.workers.dev`.
 6. En la Pi B, arrancar el nodo como gateway:
    ```
@@ -93,7 +93,7 @@ Lista de chequeo:
    ```
 7. Abrir la URL desde el celular: los temas públicos de FaroNet aparecen ahí. **Esa URL es la que va en la entrega.**
 
-## Modelo de amenazas: el proveedor del edge (para el RFC)
+## Modelo de amenazas: el proveedor del edge (ver también el RFC, Secciones 7.1 y 7.5)
 
 Aunque el código no guarda IP ni User-Agent, **Cloudflare sigue viendo**:
 - **La IP del gateway y la hora de cada publicación.** No ve quién la escribió: el origen ya se perdió en el onion de 3 saltos.

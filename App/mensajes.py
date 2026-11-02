@@ -1,36 +1,40 @@
 """
 mensajes.py - Protocolo de la aplicación anónima de FaroNet (Capa 7), versión 1.
 
-Dos clases de mensaje:
+La aplicación usa dos clases de mensaje.
 
-1) MENSAJE PRIVADO (va dentro de la última capa de la cebolla, 316 bytes fijos):
+1) Mensaje privado. Viaja dentro de la última capa de la cebolla y siempre
+   mide 316 bytes:
 
     +-----+------+-------+-----------+----------+-----------+---------+
     | Ver | Tipo | Flags | Remitente | Long.    |  Cuerpo   | Relleno |
     | 1 B | 1 B  |  1 B  |   8 B     | cuerpo 2B|           |         |
     +-----+------+-------+-----------+----------+-----------+---------+
-    Flags bit 0 = IDENTIFICADO. Si está, Remitente es el id del que envía y el
-    cuerpo va además dentro de un Box de libsodium (X25519 del remitente ->
-    X25519 del destinatario): el destinatario comprueba quién lo escribió.
-    Si no está, Remitente son ceros y el mensaje es totalmente anónimo.
+    El bit 0 de Flags indica que el mensaje es identificado. En ese caso,
+    Remitente es el id de quien lo envía y el cuerpo va además dentro de un
+    Box de libsodium, cifrado de la llave X25519 del remitente a la del
+    destinatario; así el destinatario comprueba quién lo escribió. Si el bit
+    no está, Remitente va en ceros y el mensaje es completamente anónimo.
 
-    Contenido (dentro del cuerpo):
+    El cuerpo contiene:
     | Id del mensaje 8 B | Enviado (s Unix) 4 B | TTL (s) 4 B | Long. texto 2 B | Texto UTF-8 |
 
-2) PUBLICACIÓN EN UN TEMA (se inunda en toda la mesh, 365 bytes fijos):
+2) Publicación en un tema. Se inunda en toda la mesh y siempre mide 365 bytes:
 
     +-----+------+-------------+--------+--------+-------+-----------+------+-----------+--------+---------+
     | Ver | Tipo | Visibilidad | Id msg | Creada | TTL   | Long.tema | Tema | Long.cuerp| Cuerpo | Relleno |
     | 1 B | 1 B  |    1 B      |  8 B   |  4 B   |  4 B  |   1 B     | 0-32 |    2 B    |        |         |
     +-----+------+-------------+--------+--------+-------+-----------+------+-----------+--------+---------+
-    Visibilidad 0 = PÚBLICA: el texto va en claro y el gateway lo publica en
-        Internet (Cloudflare Workers).
-    Visibilidad 1 = PRIVADA: "Tema" es una etiqueta derivada de la clave del
-        tema (no su nombre) y el cuerpo va en un SecretBox con esa clave: solo
-        los que conocen la clave lo leen y NUNCA sale de FaroNet.
-    No hay campo de autor: las publicaciones son anónimas.
+    Con Visibilidad 0 la publicación es pública: el texto va en claro y el
+        gateway la publica en Internet (Cloudflare Workers).
+    Con Visibilidad 1 es privada: el campo Tema lleva una etiqueta derivada
+        de la clave del tema en lugar de su nombre, y el cuerpo va en un
+        SecretBox con esa clave. Solo quienes conocen la clave pueden leerla,
+        y nunca sale de FaroNet.
+    No hay campo de autor, así que las publicaciones son anónimas.
 
-El TTL dice cuánto tiempo pueden guardarse (en memoria, nunca en disco).
+El TTL indica cuánto tiempo se puede guardar cada mensaje, siempre en memoria
+y nunca en disco.
 """
 import os
 import struct
@@ -50,12 +54,12 @@ TIPO_PUBLICACION = 2
 FLAG_IDENTIFICADO = 0x01
 PUBLICA, PRIVADA = 0, 1
 
-TAM_PRIVADO = 316           # = cebolla.TAM_MENSAJE_APP
-TAM_PUBLICACION = 365       # = cebolla.TAM_PUBLICACION
+TAM_PRIVADO = 316           # igual a cebolla.TAM_MENSAJE_APP
+TAM_PUBLICACION = 365       # igual a cebolla.TAM_PUBLICACION
 MAX_TEMA = 32
 TTL_POR_DEFECTO = 3600      # 1 hora
 TTL_MAXIMO = 24 * 3600
-SOBRECOSTO_CAJA = 40        # nonce 24 + MAC 16
+SOBRECOSTO_CAJA = 40        # 24 del nonce y 16 de la MAC
 
 _PRIV = struct.Struct(">BBB8sH")
 _CONTENIDO = struct.Struct(">8sIIH")
@@ -95,13 +99,14 @@ class Privado:
     id_msg: bytes
     enviado: int
     ttl: int
-    remitente: bytes = None         # None = anónimo
-    verificado: bool = False        # True si el Box confirmó al remitente
+    remitente: bytes = None         # None si el mensaje es anónimo
+    verificado: bool = False        # True si el Box confirmó quién lo envió
 
 
 def armar_privado(texto, ttl=TTL_POR_DEFECTO, identidad=None, llave_destino=None):
-    """Devuelve los 316 bytes. Con `identidad` (y la llave del destinatario)
-    el mensaje va identificado y autenticado; sin ella, es anónimo."""
+    """Arma los 316 bytes de un mensaje privado. Si se pasan `identidad` y la
+    llave del destinatario, el mensaje va identificado y autenticado; si no,
+    es anónimo."""
     ttl = max(1, min(int(ttl), TTL_MAXIMO))
     maximo = MAX_TEXTO_PRIVADO if identidad else MAX_TEXTO_PRIVADO_ANONIMO
     datos = _texto(texto, maximo)
@@ -116,7 +121,8 @@ def armar_privado(texto, ttl=TTL_POR_DEFECTO, identidad=None, llave_destino=None
 
 
 def leer_privado(datos, identidad, buscar_llave):
-    """buscar_llave(id) -> llave X25519 del remitente según el directorio, o None."""
+    """Lee un mensaje privado. `buscar_llave(id)` debe devolver la llave X25519
+    del remitente según el directorio, o None si no lo conoce."""
     if len(datos) != TAM_PRIVADO:
         raise ErrorMensaje("tamaño de mensaje privado inválido")
     version, tipo, flags, remitente, largo = _PRIV.unpack(datos[:_PRIV.size])
@@ -149,8 +155,8 @@ def leer_privado(datos, identidad, buscar_llave):
 
 # ---------------------------------------------------------------- temas
 def clave_de_tema(nombre, frase):
-    """Clave de 32 B de un tema privado, derivada con Argon2id de una frase
-    compartida entre sus miembros (fuera de banda)."""
+    """Deriva con Argon2id la clave de 32 B de un tema privado, a partir de una
+    frase que sus miembros acordaron fuera de la red."""
     sal = nacl.hash.blake2b(b"faronet-tema:" + nombre.encode("utf-8"), digest_size=16,
                             encoder=nacl.encoding.RawEncoder)
     return nacl.pwhash.argon2id.kdf(32, frase.encode("utf-8"), sal,
@@ -159,7 +165,8 @@ def clave_de_tema(nombre, frase):
 
 
 def etiqueta_de_clave(clave):
-    """Lo que viaja en el campo Tema de una publicación privada (16 caracteres)."""
+    """Calcula la etiqueta de 16 caracteres que viaja en el campo Tema de una
+    publicación privada, en lugar del nombre del tema."""
     return nacl.hash.blake2b(b"etiqueta" + clave, digest_size=8,
                              encoder=nacl.encoding.RawEncoder).hex()
 
@@ -173,12 +180,12 @@ def _validar_tema(tema):
 
 @dataclass
 class Publicacion:
-    tema: str               # nombre (pública) o etiqueta (privada)
+    tema: str               # el nombre si es pública, o la etiqueta si es privada
     visibilidad: int
     id_msg: bytes
     creada: int
     ttl: int
-    cuerpo: bytes           # texto en claro (pública) o cifrado (privada)
+    cuerpo: bytes           # el texto en claro si es pública, o cifrado si es privada
     crudo: bytes = b""
 
     @property
@@ -197,7 +204,8 @@ class Publicacion:
 
 
 def armar_publicacion(tema, texto, clave=None, ttl=TTL_POR_DEFECTO):
-    """Publicación pública (clave=None) o privada (con la clave del tema)."""
+    """Arma una publicación: pública si clave=None, o privada si se pasa la
+    clave del tema."""
     tema = _validar_tema(tema)
     ttl = max(1, min(int(ttl), TTL_MAXIMO))
     privada = clave is not None

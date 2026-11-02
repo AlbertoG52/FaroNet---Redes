@@ -4,7 +4,7 @@ Pruebas del gateway y del edge.
     python3 -m unittest discover -s tests -v
 
 Las pruebas que hablan con el Worker usan Node (22.18 o más nuevo) para correr
-el código REAL del Worker (Edge/src) con una simulación de Cloudflare en
+el código real del Worker (Edge/src) sobre una simulación de Cloudflare en
 memoria. Si Node no está instalado, esas pruebas se saltan.
 """
 import json
@@ -46,7 +46,7 @@ NODE = node_sirve()
 
 
 class NodoFalso:
-    """Lo mínimo del nodo que usa el gateway."""
+    """Lo mínimo de un nodo que necesita el gateway."""
 
     def __init__(self, n_otros=3):
         self.identidad = Identidad()
@@ -93,14 +93,15 @@ class PruebasBuzon(unittest.TestCase):
         self.assertEqual(len(id_a), 64)
         corto = buzon_muerto.armar_blob(clave, "hola")
         largo = buzon_muerto.armar_blob(clave, "x" * 900)
-        self.assertEqual(len(corto), len(largo))          # no se filtra el largo
+        self.assertEqual(len(corto), len(largo))          # no se revela el largo del mensaje
         self.assertNotIn(b"hola", corto)
         self.assertEqual(buzon_muerto.leer_blob(clave, corto), "hola")
 
 
 @unittest.skipUnless(NODE, "hace falta Node 22.18+ para correr el Worker")
 class PruebasConElWorker(unittest.TestCase):
-    """Gateway de Python  ->  HTTP  ->  código real del Worker (simulado en memoria)."""
+    """El gateway de Python habla por HTTP con el código real del Worker,
+    que corre sobre la simulación en memoria."""
 
     @classmethod
     def setUpClass(cls):
@@ -144,7 +145,7 @@ class PruebasConElWorker(unittest.TestCase):
     def test_directorio_publico_verificable(self):
         self.assertEqual(self.gw.enviar_directorio(), 200)
         datos = json.loads(self.get("/directorio"))
-        self.assertEqual(len(datos["nodos"]), 4)                 # 3 nodos + el gateway
+        self.assertEqual(len(datos["nodos"]), 4)                 # 3 nodos más el gateway
         buenas, malas = verificar_directorio.verificar(datos)
         self.assertEqual((buenas, malas), (4, 0))
 
@@ -160,10 +161,10 @@ class PruebasConElWorker(unittest.TestCase):
         self.assertEqual(estado, 201)
         estado, blob = buzon_muerto.pedir("GET", url)
         self.assertEqual(buzon_muerto.leer_blob(clave, blob), "nos vemos")
-        self.assertEqual(buzon_muerto.pedir("GET", url)[0], 404)      # se borró al leerlo
+        self.assertEqual(buzon_muerto.pedir("GET", url)[0], 404)      # se borró al leerlo la primera vez
 
     def test_vectores_cruzados_python_typescript(self):
-        """Firmas y entradas hechas con PyNaCl, verificadas por el código TypeScript."""
+        """El código TypeScript verifica firmas y entradas hechas con PyNaCl."""
         yo = self.nodo.identidad
         cuerpo = json.dumps({"tema": "a", "texto": "ñandú"}, ensure_ascii=False)
         cab = cabeceras_firmadas(yo, "/gw/publicacion", cuerpo.encode())

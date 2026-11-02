@@ -1,22 +1,23 @@
 /**
  * control.ts - Durable Object "Control" (una sola instancia).
  *
- * 1) Autentica al gateway: cada petición viene firmada con Ed25519 por la
- *    llave del nodo gateway, con marca de tiempo (±60 s) y un nonce que no se
- *    puede repetir (protección contra replay).
- * 2) Guarda la réplica pública del directorio de nodos (solo entradas con
- *    firma válida y vigentes).
+ * 1) Autentica al gateway. Cada petición llega firmada con Ed25519 por la
+ *    llave del nodo gateway, con una marca de tiempo (±60 s) y un nonce que
+ *    no se puede repetir, lo que la protege contra el replay.
+ * 2) Guarda la réplica pública del directorio de nodos, solo con entradas
+ *    vigentes y de firma válida.
  * 3) Lleva la lista de temas públicos activos.
- * 4) Límite de peticiones por cliente. La IP NUNCA se guarda: se convierte en
- *    un resumen SHA-256 con una sal aleatoria que solo vive en memoria (cambia
- *    cada vez que el objeto se reinicia) y los contadores duran 60 s.
+ * 4) Aplica el límite de peticiones por cliente. La IP nunca se guarda: se
+ *    convierte en un resumen SHA-256 con una sal aleatoria que solo vive en
+ *    memoria y cambia cada vez que el objeto se reinicia, y los contadores
+ *    duran 60 s.
  */
 import {
   MAX_CUERPO_GATEWAY, MAX_TEXTO, TTL_MAX_S, VENTANA_FIRMA_S, bytesAHex, error, hexABytes, json,
   leerEntrada, mensajeFirmado, normalizarTema, verificarEd25519,
 } from "./comun.ts";
 
-const LIMITES: Record<string, number> = { lectura: 120, ws: 20, buzon: 20, gw: 30 };  // por minuto
+const LIMITES: Record<string, number> = { lectura: 120, ws: 20, buzon: 20, gw: 30 };  // peticiones por minuto
 
 export class Control {
   state: any;
@@ -55,7 +56,7 @@ export class Control {
     const c = this.contadores.get(clave);
     if (!c || c.ventana !== ventana) {
       this.contadores.set(clave, { ventana, n: 1 });
-      if (this.contadores.size > 10000) {             // limpieza de ventanas viejas
+      if (this.contadores.size > 10000) {             // se limpian los contadores de minutos anteriores
         for (const [k, v] of this.contadores) if (v.ventana !== ventana) this.contadores.delete(k);
       }
       return json({ permitido: true });
@@ -81,7 +82,7 @@ export class Control {
     if (cuerpo.length > MAX_CUERPO_GATEWAY) return error(413, "cuerpo demasiado grande");
     const ok = await verificarEd25519(llave, firma, mensajeFirmado("POST", ruta, tiempo, nonce, cuerpo));
     if (!ok) return error(401, "firma inválida");
-    // replay: el nonce no puede haberse usado en los últimos 2 minutos
+    // Contra el replay: el nonce no puede haberse usado en los últimos 2 minutos.
     const claveNonce = `n:${nonce}`;
     if (await this.state.storage.get(claveNonce)) return error(409, "petición repetida (replay)");
     await this.state.storage.put(claveNonce, Date.now() + 2 * VENTANA_FIRMA_S * 1000);

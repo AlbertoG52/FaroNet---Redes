@@ -3,12 +3,12 @@ directorio.py - Directorio de nodos de FaroNet.
 
 Cada nodo publica su entrada firmada (ver identidad.py) y la mesh la
 propaga por inundación: cuando un nodo recibe una entrada válida que no
-conocía (o una más nueva del mismo nodo), la guarda y la reenvía a sus
-vecinos. Así cada nodo termina con una copia del directorio completo, sin
-un servidor central. Las entradas vencidas se borran solas.
+conocía, o una más nueva del mismo nodo, la guarda y se la pasa a sus
+vecinos. Así cada nodo termina con una copia completa del directorio sin
+depender de un servidor central. Las entradas vencidas se borran solas.
 
-Solo se aceptan entradas con firma válida y con un id que corresponda a
-la llave (identidad.Entrada.desde_bytes lo verifica).
+Solo se aceptan entradas con firma válida y con un id que corresponda a la
+llave; esa verificación la hace identidad.Entrada.desde_bytes.
 """
 import threading
 import time
@@ -16,11 +16,12 @@ import time
 
 class Directorio:
     def __init__(self):
-        self._entradas = {}             # id -> Entrada
+        self._entradas = {}             # id del nodo -> su Entrada
         self._lock = threading.Lock()
 
     def agregar(self, entrada, ahora=None):
-        """Guarda la entrada si es vigente y más nueva. Devuelve True si cambió algo."""
+        """Guarda la entrada si está vigente y es más nueva que la que ya se
+        tenía. Devuelve True si el directorio cambió."""
         if not entrada.vigente(ahora):
             return False
         with self._lock:
@@ -36,7 +37,8 @@ class Directorio:
         return entrada if entrada is not None and entrada.vigente() else None
 
     def buscar(self, texto):
-        """Busca por alias exacto o por prefijo del id en hexadecimal."""
+        """Busca un nodo por su alias exacto o por el inicio de su id en
+        hexadecimal."""
         texto = texto.strip().lower()
         candidatos = [e for e in self.vigentes()
                       if e.alias.lower() == texto or e.id.hex().startswith(texto)]

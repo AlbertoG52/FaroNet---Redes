@@ -80,6 +80,8 @@ def mostrar(r, cmd):
               f"· buzón {r['buzon']} · publicaciones {r['publicaciones']}")
         e = r["estadisticas"]
         print("  " + ", ".join(f"{k} {v}" for k, v in e.items()))
+        for nombre, f in r.get("faro", {}).items():
+            print(f"  capa 1 ({nombre}): " + ", ".join(f"{k} {v}" for k, v in f.items()))
     elif cmd == "vecinos":
         if not r["vecinos"]:
             print("(sin vecinos todavía)")

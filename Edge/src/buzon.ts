@@ -1,17 +1,18 @@
 /**
  * buzon.ts - Durable Object "Buzon": un buzón muerto (dead drop) por identificador.
  *
- *   PUT /buzon/<id>   deposita un blob cifrado de EXACTAMENTE 1024 bytes
- *   GET /buzon/<id>   lo entrega y lo BORRA (solo se puede leer una vez)
+ *   PUT /buzon/<id>   deposita un blob cifrado de exactamente 1024 bytes
+ *   GET /buzon/<id>   lo entrega y lo borra, así que solo se puede leer una vez
  *
- * - <id> es opaco: 64 caracteres hex que los dos participantes derivan de un
- *   secreto compartido (ver Gateway/buzon_muerto.py). El Worker no sabe quién
- *   lo creó ni qué contiene.
- * - El blob ya viene cifrado; el Worker nunca ve el contenido en claro.
- * - Tamaño fijo (1024 B) para no filtrar el largo del mensaje.
- * - TTL: si nadie lo recoge, una alarma lo borra al vencer (por defecto 1 h).
- * - Se usa un Durable Object (consistencia fuerte) y no KV, para que "borrar
- *   al leer" sea exacto: con KV, otra región podría leerlo una segunda vez.
+ * - El <id> es opaco: son 64 caracteres hexadecimales que los dos
+ *   participantes derivan de un secreto compartido (ver
+ *   Gateway/buzon_muerto.py). El Worker no sabe quién lo creó ni qué contiene.
+ * - El blob llega ya cifrado, de modo que el Worker nunca ve el contenido.
+ * - El tamaño es fijo (1024 B) para no revelar el largo del mensaje.
+ * - Si nadie lo recoge, una alarma lo borra cuando vence su TTL (1 h por omisión).
+ * - Se usa un Durable Object, que tiene consistencia fuerte, en lugar de KV,
+ *   para que el borrado al leer sea exacto: con KV, otra región podría leerlo
+ *   una segunda vez.
  */
 import { CABECERAS_SEGURAS, TAM_BLOB, TTL_BUZON_DEF_S, TTL_MAX_S, error, json } from "./comun.ts";
 
@@ -43,7 +44,7 @@ export class Buzon {
   async recoger(): Promise<Response> {
     const [blob, vence] = await Promise.all([this.state.storage.get("blob"),
                                              this.state.storage.get("vence")]);
-    await this.state.storage.deleteAll();               // se borra al leer
+    await this.state.storage.deleteAll();               // se borra en cuanto se lee
     await this.state.storage.deleteAlarm();
     if (!blob || vence <= Date.now()) return error(404, "no hay nada en ese buzón");
     return new Response(blob, {
@@ -52,6 +53,6 @@ export class Buzon {
   }
 
   async alarm(): Promise<void> {
-    await this.state.storage.deleteAll();               // venció el TTL
+    await this.state.storage.deleteAll();               // el TTL venció sin que nadie lo leyera
   }
 }

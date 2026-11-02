@@ -1,30 +1,30 @@
 #!/usr/bin/env python3
 """
-faronet_nodo.py - Arranca un nodo de FaroNet (mesh + aplicación anónima).
+faronet_nodo.py - Arranca un nodo de FaroNet: la mesh y la aplicación anónima.
 
-Todos los parámetros se reciben desde la terminal. Ejemplos:
+Todos los parámetros se reciben desde la terminal. Algunos ejemplos:
 
-  # Nodo común por WiFi/Ethernet (descubre solo a los vecinos de la red local):
+  # Nodo común por WiFi o Ethernet, que descubre solo a sus vecinos de la red local:
   python3 faronet_nodo.py --alias ana --puerto 7001 --api 7101
 
-  # Nodo con vecinos fijos (por ejemplo, otra computadora o una Pi por Tailscale):
+  # Nodo con vecinos fijos, por ejemplo otra computadora o una Pi por Tailscale:
   python3 faronet_nodo.py --alias beto --puerto 7000 --vecino 100.64.0.5:7000
 
-  # Nodo puerta de enlace de una comunidad, con el Faro REAL (en la Raspberry Pi):
+  # Nodo que une a una comunidad con la otra por el Faro real (en la Raspberry Pi):
   sudo pigpiod
   python3 faronet_nodo.py --alias faroA --faro real --pausa 40
 
-  # Nodo GATEWAY (Pi B): además envía los temas públicos al Worker de Cloudflare
+  # Nodo gateway (Pi B), que además envía los temas públicos al Worker de Cloudflare:
   python3 faronet_nodo.py --alias faroB --faro real --pausa 40 --worker https://faronet.xxx.workers.dev
-  python3 faronet_nodo.py --alias faroB --llave-gateway     # la llave para wrangler.toml
+  python3 faronet_nodo.py --alias faroB --llave-gateway     # muestra la llave para wrangler.toml
 
-  # Lo mismo pero con el Faro SIMULADO (en la laptop, sin Raspberry Pi):
+  # Lo mismo, pero con el Faro simulado (en una computadora, sin Raspberry Pi):
   python3 faronet_nodo.py --alias faroA --faro simulado --velocidad 25
 
-  # Varias comunidades en una sola computadora (sin descubrimiento, vecinos fijos):
+  # Varias comunidades en una sola computadora, sin descubrimiento y con vecinos fijos:
   python3 faronet_nodo.py --alias n1 --puerto 7001 --api 7101 --sin-descubrir --vecino 127.0.0.1:7002
 
-Luego, en otra terminal, se usa el chat:  python3 App/chat.py --api 7101 ...
+Después, en otra terminal, se usa el chat:  python3 App/chat.py --api 7101 ...
 """
 import argparse
 import os
@@ -48,6 +48,9 @@ from nodo import Nodo                          # noqa: E402
 from servicio import ServicioChat              # noqa: E402
 
 
+CODIGO_PANICO = 3      # código con el que termina el proceso después de un pánico
+
+
 def crear_faro(a):
     from DispositivoLuzAdaptador import DispositivoLuzAdaptador, DispositivoLuzSimulado
     if a.faro == "simulado":
@@ -57,7 +60,8 @@ def crear_faro(a):
     return DispositivoLuzAdaptador(pin_emisor=a.pin_emisor, pin_receptor=a.pin_receptor,
                                    led_tx=a.led_tx, led_rx=a.led_rx, boton=a.boton,
                                    led_panico=a.led_panico, t_us=a.t_us, pausa=a.pausa,
-                                   activo_alto=a.activo_alto, depurar=a.debug_faro)
+                                   activo_alto=a.activo_alto, depurar=a.debug_faro,
+                                   ciclo=a.ciclo, datos_por_trama=a.datos_por_trama)
 
 
 def argumentos():
@@ -97,6 +101,10 @@ def argumentos():
     f = p.add_argument_group("Faro (enlace de luz entre comunidades)")
     f.add_argument("--faro", choices=("ninguno", "real", "simulado"), default="ninguno")
     f.add_argument("--costo-faro", type=int, default=10)
+    f.add_argument("--intervalo-faro", type=float, default=None, metavar="S",
+                   help="cada cuántos s se mandan HELLO y RUTAS por la luz (IGUAL en los dos "
+                        "Faros). Por omisión 300 con el Faro real (la luz va a ~21 B/s y con "
+                        "90 s el control ocupaba casi todo el enlace) y 90 con el simulado")
     f.add_argument("--pausa", type=int, default=12, help="igual en los dos Faros")
     f.add_argument("--t-us", type=int, default=600, help="unidad T en µs (igual en los dos)")
     f.add_argument("--velocidad", type=float, default=None,
@@ -111,11 +119,20 @@ def argumentos():
     f.add_argument("--led-panico", type=int, default=16)
     f.add_argument("--activo-alto", action="store_true")
     f.add_argument("--debug-faro", action="store_true", help="mostrar cada trama del Faro")
+    f.add_argument("--ciclo", type=int, default=33,
+                   help="real: %% encendido de la portadora (menos = luz más débil)")
+    f.add_argument("--datos-por-trama", type=int, default=110,
+                   help="real: bytes de datos por trama (37 a 110; más corto = más robusto)")
+    f.add_argument("--clave-enlace", default=None, metavar="FRASE",
+                   help="cifra el enlace de luz (la MISMA frase en los dos Faros); "
+                        "oculta HELLO y RUTAS a quien observe la luz")
     return p.parse_args()
 
 
 def main():
     a = argumentos()
+    if len(a.alias.encode("utf-8")) > 16:
+        sys.exit("--alias puede tener como máximo 16 bytes (las tildes y la ñ ocupan 2)")
     if a.sin_udp and a.faro == "ninguno":
         sys.exit("El nodo necesita al menos una interfaz: quite --sin-udp o use --faro")
     nombre = a.alias or "nodo"
@@ -137,7 +154,13 @@ def main():
             interfaces.append(InterfazUDP(a.medio, a.ip, a.puerto, a.vecino,
                                           descubrir=not a.sin_descubrir, costo=costo))
         if a.faro != "ninguno":
-            interfaces.append(InterfazFaro(crear_faro(a), costo=a.costo_faro))
+            if not 37 <= a.datos_por_trama <= 110:
+                sys.exit("--datos-por-trama debe estar entre 37 y 110 (un paquete de 550 B "
+                         "debe caber en las 15 tramas de un mensaje del Faro)")
+            intervalo = a.intervalo_faro or (300 if a.faro == "real" else 90)
+            interfaces.append(InterfazFaro(crear_faro(a), costo=a.costo_faro,
+                                           intervalo_hello=intervalo, intervalo_rutas=intervalo,
+                                           clave_enlace=a.clave_enlace))
     except (OSError, ValueError, RuntimeError) as e:
         for i in interfaces:
             i.cerrar()
@@ -180,6 +203,8 @@ def main():
     if nodo.panico_activado:
         print("PÁNICO: llaves y datos borrados. Nodo detenido.", flush=True)
     nodo.detener()
+    if nodo.panico_activado:
+        sys.exit(CODIGO_PANICO)       # pi_comunidad.py lo usa para borrar también los otros nodos de la Pi
 
 
 if __name__ == "__main__":

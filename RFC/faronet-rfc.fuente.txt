@@ -1,0 +1,729 @@
+# Fuente del RFC de FaroNet. NO se entrega este archivo: se entrega
+# RFC/rfc-faronet.txt, que se genera con:   python3 RFC/formatear_rfc.py
+# y se comprueba con:                       python3 RFC/verificar_rfc.py
+# Las tildes y la ñ se convierten solas a ASCII.
+~~~
+Grupo de trabajo: IC7602 Redes                       A. Guerrero Gabay
+Request for Comments: FARONET-1                    C. Alvarado Aguilar
+Categoria: Experimental                        Tecnologico de Costa Rica
+                                                        Noviembre 2026
+~~~
+
+~~~
+
+
+            FaroNet: protocolo de transmisión por luz (Faro) y
+           red mesh anónima con salida a Internet por el edge
+~~~
+
+=Resumen=
+
+Este documento especifica FaroNet, una red que se construye desde la capa física hasta la aplicación con énfasis en privacidad. Define cuatro protocolos: (1) el protocolo de Capa 1 del Faro, un dispositivo que transmite tramas por luz infrarroja; (2) el protocolo de las capas 2 y 3 de FaroNet, una red mesh que funciona sobre Ethernet, WiFi y el Faro, con enrutamiento dinámico, directorio de nodos firmado y enrutamiento por capas (cebolla) de tres saltos; (3) el protocolo de la aplicación anónima de chat y microblog; y (4) el protocolo entre la puerta de enlace (gateway) y una aplicación pública desplegada en el edge. Incluye las consideraciones de privacidad y de seguridad de cada uno.
+
+=Estado de este memorando=
+
+Este documento no es un estándar de Internet. Se publica con fines académicos como parte del Proyecto 1 del curso IC7602 Redes de Computadoras, II Semestre 2026, de la Escuela de Ingeniería en Computación del Instituto Tecnológico de Costa Rica. Su categoría es Experimental: describe protocolos implementados y probados por los autores, no aprobados por ningún organismo de estandarización. Su formato sigue la guía de estilo de los RFC [RFC7322].
+
+=Aviso de copyright=
+
+Copyright (c) 2026 los autores. Se permite copiar y distribuir este documento sin modificaciones.
+
+=Tabla de contenidos=
+
+{{TOC}}
+
+{{PAGINA}}
+1.  Introducción
+
+El anonimato y la privacidad siguen en el centro de la discusión sobre derechos humanos. Hoy la amenaza no es solo que alguien lea el contenido de un mensaje, sino que registre quién habla con quién, cuándo, desde dónde y con qué frecuencia: los metadatos. FaroNet es una red diseñada para filtrar el mínimo posible de esos metadatos.
+
+Dos comunidades separadas se comunican únicamente por un enlace de luz entre dos dispositivos construidos por los autores, llamados Faros. Sobre ese enlace y sobre las redes locales de cada comunidad funciona una red mesh que transporta paquetes sin revelar quién los originó. Solo el contenido marcado como público sale a Internet, a través de una puerta de enlace que lo entrega a una aplicación desplegada en el edge (Cloudflare Workers), diseñada para aprender lo mínimo posible de sus usuarios.
+
+Este documento especifica los protocolos con el detalle necesario para que otra implementación pueda interoperar con la de referencia de los autores, escrita en Python (Faro, mesh, gateway) y TypeScript (Worker).
+
+1.1.  Convenciones y terminología
+
+Las palabras clave "DEBE", "NO DEBE", "REQUERIDO", "DEBERÍA", "NO DEBERÍA", "RECOMENDADO", "PUEDE" y "OPCIONAL" de este documento se interpretan como "MUST", "MUST NOT", "REQUIRED", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY" y "OPTIONAL" de BCP 14 [RFC2119] [RFC8174] cuando aparecen, como aquí, en mayúsculas.
+
+Los números de varios bytes se transmiten en orden de red (big-endian). Las longitudes se dan en bytes (B). "T" es la unidad de tiempo de la Capa 1 (Sección 2.1).
+
+- Faro: dispositivo de transmisión por luz (emisor y receptor infrarrojos, LEDs indicadores y botón de pánico) controlado por una Raspberry Pi.
+- Trama: unidad de la Capa 1, como máximo 128 B.
+- Dirección física (MAC): identificador de 4 B de un Faro.
+- Nodo: programa que participa en la mesh FaroNet. Una computadora puede ejecutar varios nodos.
+- Paquete: unidad de las capas 2 y 3 de FaroNet, de tamaño fijo.
+- Celda: paquete que transporta un mensaje envuelto en capas de cifrado (cebolla).
+- Relay: nodo intermedio que quita una capa de una celda.
+- Comunidad: conjunto de nodos que se alcanzan por Ethernet o WiFi.
+- Gateway: nodo que entrega las publicaciones públicas al Worker.
+- Worker: la aplicación pública desplegada en el edge.
+
+1.2.  Arquitectura
+
+~~~
+    Comunidad 1                                       Comunidad 2
+ +---------------+                               +---------------+
+ | nodos (WiFi / |                               | nodos (WiFi / |
+ | Ethernet)     |                               | Ethernet)     |
+ +-------+-------+                               +-------+-------+
+         |                                               |
+ +-------+-------+     luz infrarroja (Capa 1)   +-------+-------+
+ | RPi A + Faro  | <~~~~~~~~~~~~~~~~~~~~~~~~~~~> | RPi B + Faro  |
+ +---------------+                               | + gateway     |
+                                                 +-------+-------+
+                                                         | HTTPS
+                                                 +-------+-------+
+                                                 | Worker (edge) |
+                                                 +-------+-------+
+                                                         |
+                                                 navegadores, RSS
+~~~
+
+Las capas se apilan así:
+
+~~~
+ +----------------------------------------------------------------+
+ | Capa 7: chat/microblog anónimo (Sec. 4) | gateway -> edge (5) |
+ +----------------------------------------------------------------+
+ | Capas 2/3: paquete FaroNet, rutas, directorio, cebolla (Sec. 3)|
+ +---------------------------------+------------------------------+
+ | UDP sobre Ethernet o WiFi       | Capa 1: Faro (Sección 2)     |
+ +---------------------------------+------------------------------+
+~~~
+
+{{PAGINA}}
+2.  Capa 1: protocolo del Faro
+
+2.1.  Medio físico y codificación de línea
+
+El medio es luz infrarroja de 940 nm. El emisor es un LED infrarrojo y el receptor un módulo con fotodiodo, amplificador, filtro de 38 kHz, demodulador y comparador (VS1838B [VS1838B]). Ese receptor solo reconoce ráfagas cortas de una portadora de 38 kHz y entrega nivel bajo mientras recibe una ráfaga.
+
+Por eso la codificación es OOK (on-off keying) sobre una portadora de 38 kHz y el valor de cada bit lo da la duración de la pausa que sigue a la ráfaga (codificación por distancia de pulsos, como el protocolo NEC de los controles remotos [NEC]). Sea T la unidad de tiempo (600 us por omisión) y P la pausa de cierre en unidades de T (12 por omisión). Cada byte se transmite así, con el bit más significativo primero:
+
+~~~
+   +-----------+--------------------------------+-------------------+
+   | Cabecera  | 8 bits                         | Cierre            |
+   | ráfaga 3T | bit 0: ráfaga 1T + pausa 2T    | ráfaga 1T         |
+   | pausa  4T | bit 1: ráfaga 1T + pausa 4T    | pausa P*T         |
+   +-----------+--------------------------------+-------------------+
+~~~
+
+La pausa después de cada ráfaga mide al menos el doble de la ráfaga porque el receptor deja de reconocer ráfagas demasiado seguidas. La portadora se genera con ondas por DMA (pigpio) con un ciclo de trabajo configurable (33 % por omisión, de 1 a 50 %), que regula la potencia de la luz. Un byte dura entre (32 + P) * T y (48 + P) * T.
+
+El receptor DEBE considerar terminado un byte después de 8T de silencio y DEBE descartarlo si la ráfaga de cabecera no está entre 2T y 5T, si la pausa de cabecera no está entre 2.5T y 6T o si alguna pausa de bit supera 6T. Una pausa de bit de 3T o más es un 1; si no, es un 0. Los dos Faros DEBEN usar los mismos T y P.
+
+2.2.  Formato de la trama
+
+La versión actual de la trama es la 3:
+
+~~~
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |  Inicio 0xAA  |  Inicio 0x7E  |Versión|  Tipo |   Longitud    |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                     MAC de destino (4 B)                      |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                     MAC de origen (4 B)                       |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   | N.o de mensaje| Frag. | Total |           Protocolo           |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                 Datos (0 a 110 B, ver Longitud) ...
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |            CRC-16             |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+~~~
+
+- Inicio (2 B): siempre 0xAA 0x7E. Marca dónde empieza una trama.
+- Versión (4 bits): 3. Ver la Sección 2.3.
+- Tipo (4 bits): ver la Sección 2.4.
+- Longitud (1 B): cantidad de bytes de Datos. Es el campo que dice dónde termina la trama.
+- MAC de destino y de origen (4 B cada una): la dirección FF:FF:FF:FF significa "a todos" (difusión).
+- N.o de mensaje (1 B): 0 a 255; cambia en cada mensaje nuevo.
+- Frag. (4 bits): número de este fragmento, desde 0.
+- Total (4 bits): cantidad de fragmentos del mensaje, de 1 a 15.
+- Protocolo (2 B): qué transporta la trama, como el EtherType de Ethernet: 0x0001 chat de prueba, 0x0002 paquete FaroNet (Sección 3), 0x0003 mediciones, 0x0800 IPv4, 0x86DD IPv6, 0x6558 trama Ethernet. 0x0000 indica que no hay contenido (ACK y anuncio).
+- CRC-16 (2 B): CRC-16/CCITT-FALSE [CRC] (polinomio 0x1021, valor inicial 0xFFFF, sin reflexión ni XOR final) de todo lo que va desde el byte Versión/Tipo hasta el último byte de Datos.
+
+El tamaño máximo de una trama es 2 + 14 + 110 + 2 = 128 B. Un mensaje se reparte en hasta 15 fragmentos, por lo que mide como máximo 15 * 110 = 1650 B (la MTU del Faro). Una implementación PUEDE usar fragmentos más cortos (de 1 a 110 B de datos) cuando la luz es débil.
+
+2.3.  Versiones de la trama
+
+El campo Versión es siempre el primer byte después del inicio. Con él el receptor sabe cuánto mide la cabecera y cómo leer la trama. Un receptor DEBE descartar las tramas de versiones que no conoce.
+
+~~~
+   +---------+-------------------+-------------+--------------------+
+   | Versión | Cabecera tras el  | Datos máx.  | Diferencia         |
+   |         | inicio            |             |                    |
+   +---------+-------------------+-------------+--------------------+
+   |    1    | 10 B              | 112 B       | sin n.o de mensaje |
+   |    2    | 12 B              | 110 B       | sin Protocolo      |
+   |    3    | 14 B              | 110 B       | actual             |
+   +---------+-------------------+-------------+--------------------+
+~~~
+
+La versión 1 la usan solo programas de prueba (tipos 1 = último fragmento, 2 = vienen más). La versión 2 se entrega como protocolo 0x0001 (chat). Una versión nueva se agrega declarando el largo de su cabecera; las anteriores se siguen entendiendo.
+
+2.4.  Tipos de trama y fragmentación
+
+~~~
+   +------+----------+-----------------------------------------------+
+   | Tipo | Nombre   | Uso                                           |
+   +------+----------+-----------------------------------------------+
+   |  1   | DATOS    | un fragmento de un mensaje                    |
+   |  3   | ACK      | confirma un fragmento (mismo n.o de mensaje,  |
+   |      |          | Frag. y Total), sin datos                     |
+   |  4   | ANUNCIO  | "esta es mi MAC"; a difusión, sin datos       |
+   |  5   | PRUEBA   | trama de medición; no se entrega              |
+   +------+----------+-----------------------------------------------+
+~~~
+
+Un mensaje de N bytes se divide en ceil(N/110) tramas DATOS con el mismo N.o de mensaje y Frag. de 0 a Total - 1.
+
+2.5.  Detección de inicio y fin
+
+El receptor busca el patrón 0xAA 0x7E. Después lee Versión y Longitud; si la versión no es conocida o la Longitud supera el máximo de esa versión, DEBE descartar la trama y volver a buscar el inicio. Luego lee exactamente el largo de la cabecera, Longitud bytes de datos y 2 bytes de CRC, y DEBE descartar la trama si el CRC no coincide o si Frag. no es menor que Total. Si a mitad de una trama pasan (P + 60) * T sin luz, o 0.5 s sin bytes válidos, la trama se da por perdida.
+
+2.6.  Dirección física
+
+Cada Faro genera al azar una dirección de 4 B distinta de 00:00:00:00 y de FF:FF:FF:FF y la guarda en memoria no volátil (un archivo con permisos 0600 en la tarjeta SD), con escritura atómica. La dirección DEBE poder rotarse: al rotar se genera otra al azar, se guarda y se anuncia. Durante 300 s después de rotar, el Faro DEBERÍA seguir aceptando y confirmando las tramas dirigidas a la dirección anterior, porque los vecinos tardan en enterarse.
+
+Cada Faro envía una trama ANUNCIO al arrancar, cada 30 s y cuando escucha a un Faro nuevo. Un vecino se considera activo si se escuchó en los últimos 90 s. Las tramas cuya MAC de origen es una de las propias (la luz reflejada, o eco) DEBEN ignorarse.
+
+2.7.  Acceso al medio
+
+La luz es un medio compartido y semidúplex. El acceso al medio es CSMA/CA:
+
+1. El canal está libre si el receptor no vio luz durante (P + 40) * T. Además, si el receptor está a mitad de una trama ajena, el canal sigue ocupado aunque haya un silencio entre dos bytes.
+2. Después de transmitir una trama propia se deja un silencio de al menos (P + 80) * T.
+3. Antes de cada intento se espera un número aleatorio de ranuras de 20T, entre 0 y W - 1. W vale 8 en el primer intento y se duplica en cada reintento, hasta 64. Si alguien transmite durante la espera, se vuelve al paso 1.
+4. Los ACK pendientes se transmiten sin espera aleatoria: quien envió la trama los está esperando.
+
+2.8.  Confirmación, reenvío y reensamblado
+
+Cada trama DATOS dirigida a una MAC (no a difusión) DEBE confirmarse con un ACK. El ACK lleva como origen la MAC a la que vino la trama. Si el ACK no llega a tiempo, la trama se reenvía, hasta 5 intentos en total. El plazo es el tiempo de transmitir un ACK (calculado con el tiempo real medido por byte, con un margen de 1.3) más 0.8 s. Las tramas a difusión no se confirman.
+
+El receptor junta los fragmentos por (MAC de origen, N.o de mensaje) y entrega el mensaje solo cuando tiene todos; nunca entrega un pedazo. Un mensaje sin fragmentos nuevos durante 120 s se descarta. Un fragmento repetido de un mensaje ya entregado (por ejemplo, porque se perdió el ACK) se confirma otra vez pero no se entrega dos veces. No se garantiza el orden entre mensajes distintos.
+
+2.9.  Tramas creadas fuera del Faro
+
+La biblioteca DispositivoLuzAdaptador PUEDE enviar una trama completa construida fuera del Faro (por ejemplo, con Scapy [Scapy]), después de validar el inicio, la versión, la longitud, el CRC y el tamaño máximo. El campo Protocolo permite transportar paquetes de otros protocolos, como IPv4 o tramas Ethernet.
+
+2.10.  Botón de pánico
+
+Al presionar el botón de pánico, el Faro DEBE detener la transmisión en curso, sobrescribir con ceros los datos en memoria (colas, fragmentos y buffers), sobrescribir y borrar el archivo de la dirección física, llamar a las funciones de borrado que registraron las capas superiores (Sección 3.1) y encender un LED rojo de forma permanente. Después de eso la biblioteca rechaza cualquier operación.
+
+2.11.  Justificación de la codificación
+
+Se probó primero el UART de la Raspberry Pi (codificación NRZ asíncrona). El receptor VS1838B se saturaba con niveles largos de luz y perdía datos, porque está diseñado para ráfagas cortas de 38 kHz. La codificación por distancia de pulsos solo usa ráfagas cortas, el receptor filtra la luz ambiental gracias a la portadora y la generación por DMA evita las imprecisiones de tiempo de Linux. El costo es la velocidad: unos 200 a 300 bit/s brutos con P = 12.
+
+{{PAGINA}}
+3.  FaroNet: capas 2 y 3
+
+3.1.  Identificadores y llaves
+
+Cada nodo tiene una semilla secreta de 32 B. De ella se deriva un par de llaves Ed25519 [RFC8032] para firmar y, con la conversión estándar de libsodium, un par X25519 [RFC7748] para cifrar. El identificador del nodo (id) son los primeros 8 B de BLAKE2b [RFC7693] de la llave pública Ed25519. Así el id queda atado a la llave que firma: nadie puede publicar una entrada del directorio con el id de otro nodo.
+
+Toda la criptografía DEBE implementarse con una biblioteca reconocida; la de referencia usa libsodium a través de PyNaCl [PyNaCl]. Cuando el Faro ejecuta el pánico, el nodo DEBE borrar su semilla, su directorio, sus rutas y todos los datos de la aplicación, y detenerse.
+
+3.2.  Formato del paquete
+
+Todo lo que viaja entre dos nodos vecinos es un paquete de tamaño fijo. Hay solo dos tamaños: 220 B (control) y 550 B (datos). Así un observador no puede saber cuánto mide un mensaje. Los tamaños son múltiplos de 110 B, los datos de una trama del Faro: un paquete de control ocupa 2 tramas y uno de datos, 5.
+
+~~~
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |    Versión    |     Tipo      |      TTL      |     Flags     |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                                                               |
+   +                      Destino (id, 8 B)                        +
+   |                                                               |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |           Longitud            |  Cuerpo (Longitud B) ...      |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |  Relleno aleatorio hasta 220 o 550 B ...                      |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+~~~
+
+- Versión (1 B): 1.
+- Tipo (1 B): 1 HELLO, 2 RUTAS, 3 DIRECTORIO (paquetes de 220 B); 4 CELDA y 5 PUBLICACION (paquetes de 550 B). Un paquete de un tipo DEBE medir el tamaño de su clase; si no, se descarta.
+- TTL (1 B): saltos que le quedan; cada nodo lo reduce en 1 y descarta el paquete al llegar a 0. Vale 16 al crear el paquete.
+- Flags (1 B): 0. Reservado.
+- Destino (8 B): id del nodo al que va una CELDA; ceros en los demás tipos.
+- Longitud (2 B): bytes útiles del Cuerpo. En CELDA y PUBLICACION es siempre el máximo de su contenido, para no filtrar nada.
+- Relleno: bytes aleatorios hasta completar el tamaño fijo.
+
+El paquete NO tiene campo de origen: no dice qué nodo lo creó. El vecino que lo entrega se conoce por el enlace (Sección 3.5), no por el paquete.
+
+3.3.  Transporte sobre UDP
+
+Sobre Ethernet o WiFi cada paquete viaja en un datagrama UDP, por omisión al puerto 7000. Un nodo conoce a sus vecinos de dos formas: los que se le indican (dirección IP y puerto) y los que responden al HELLO que envía al grupo multicast 239.255.70.79, puerto 47079, con TTL 1 (solo la red local) [RFC2365]. Costo del enlace: 1 para Ethernet y 2 para WiFi.
+
+3.4.  Transporte sobre el Faro
+
+Sobre el Faro cada paquete es un mensaje de la Capa 1 con Protocolo 0x0002. Los paquetes dirigidos a un vecino van a su MAC (con ACK, Sección 2.8); los HELLO van a difusión. Costo del enlace: 10. Como el Faro va a unos 20 a 30 B/s, los HELLO y las RUTAS se envían cada 300 s. El nodo DEBE pasarle al Faro un solo envío a la vez desde una fila propia, en la que los paquetes de datos (CELDA y PUBLICACION) salen antes que los de control. Un paquete de control nuevo DEBE reemplazar al que todavía espera en la fila con el mismo tipo, el mismo destino y el mismo id al inicio del cuerpo (el nodo del HELLO, el primer destino de RUTAS o el nodo de la entrada del DIRECTORIO). Si aun así hay 12 paquetes de control en espera, los nuevos se descartan; los de datos siempre se encolan.
+
+Cifrado del enlace (RECOMENDADO): los dos Faros PUEDEN compartir una frase. De ella se deriva una clave de 32 B con Argon2id [RFC9106] (sal "faronet-enlace-1", parámetros "interactive" de libsodium: 2 pasadas, 64 MiB), y cada paquete viaja dentro de un SecretBox (XSalsa20-Poly1305 [XSalsa20], 24 B de nonce aleatorio + 16 B de MAC). Los paquetes pasan a medir 260 y 590 B, siempre iguales entre sí. Un paquete que no se pueda descifrar DEBE descartarse. Sin este cifrado, un observador de la luz ve los HELLO y RUTAS, que contienen ids, y la rotación de la MAC no impediría asociarla con el nodo (Sección 7).
+
+3.5.  Descubrimiento de vecinos (HELLO)
+
+~~~
+   Cuerpo del HELLO (11 B):
+   +-----------+---------------------------+-----------------------+
+   | Ver. (1B) | Id del nodo (8 B)         | Intervalo, s (2 B)    |
+   +-----------+---------------------------+-----------------------+
+~~~
+
+Cada nodo envía un HELLO por cada interfaz cada "Intervalo" segundos (5 s por UDP, 300 s por el Faro). Quien lo recibe asocia la dirección de la interfaz (IP:puerto o MAC) con el id. Un vecino se borra si no se oye nada de él durante 3.5 veces su intervalo. Al descubrir un vecino nuevo, el nodo le responde con un HELLO, su vector de rutas y todas las entradas del directorio que conoce. Un nodo DEBE ignorar los HELLO con su propio id y los paquetes de direcciones de las que aún no recibió un HELLO (a esas les responde con un HELLO).
+
+3.6.  Enrutamiento dinámico (RUTAS)
+
+FaroNet usa enrutamiento por vector de distancias (Bellman-Ford distribuido, como RIP [RFC2453]). Cada nodo anuncia a cada vecino los destinos que alcanza y su costo:
+
+~~~
+   Cuerpo de RUTAS:
+   +--------------+-----------------------------------------------+
+   | Cantidad (1B)| [ Id de destino (8 B) | Métrica (1 B) ] x N   |
+   +--------------+-----------------------------------------------+
+~~~
+
+Caben 22 rutas por paquete; si hay más, se envían varios. La métrica 32 significa "inalcanzable". Un nodo se anuncia a sí mismo con métrica 0. Al recibir el vector de un vecino por su enlace de menor costo, el nodo calcula costo = métrica + costo del enlace y aplica: si el destino no estaba, lo agrega; si la ruta actual sale por ese mismo vecino, la reemplaza (o la borra si llega a 32); si no, la reemplaza solo si el costo es menor.
+
+Para evitar ciclos se usa horizonte dividido con envenenamiento: a un vecino se le anuncian con métrica 32 los destinos a los que se llega por él. Las rutas vencen a las 3.5 veces el intervalo de anuncio del enlace (10 s por UDP, 300 s por el Faro). Cuando la tabla cambia se envía una actualización disparada, como máximo cada 2 s por UDP y cada 60 s por el Faro.
+
+3.7.  Directorio de nodos
+
+Cada nodo publica una entrada firmada:
+
+~~~
+   +-----+---------+--------------+--------+--------+-------+------+
+   | Ver | Id      | Llave Ed25519| Creada | Expira | Flags | LAli |
+   | 1 B | 8 B     | 32 B         | 4 B    | 4 B    | 1 B   | 1 B  |
+   +-----+---------+--------------+--------+--------+-------+------+
+   | Alias (LAli B, 0 a 16, UTF-8) | Firma Ed25519 (64 B)            |
+   +-------------------------------+---------------------------------+
+~~~
+
+- Ver: 1. Creada y Expira: segundos Unix. Flags, bit 0: el nodo es gateway.
+- La firma cubre todos los campos anteriores.
+
+Un nodo DEBE aceptar una entrada solo si la firma es válida, si el id es BLAKE2b-64 de la llave, si está vigente (Creada - 300 s <= ahora < Expira) y si es más nueva (mayor Creada) que la que tiene del mismo id. Cuando acepta una entrada nueva, la reenvía a todos sus vecinos menos al que se la dio (inundación). Así todos los nodos tienen una copia del directorio, sin servidor central. Las entradas duran 30 minutos; cada nodo renueva la suya cada 10. La llave X25519 para cifrar hacia un nodo se obtiene de su llave Ed25519.
+
+3.8.  Enrutamiento por capas (cebolla)
+
+Para enviar un mensaje privado, el emisor elige al azar del directorio tres relays distintos R1, R2 y R3, distintos de sí mismo y del destino y alcanzables según su tabla de rutas. Los ordena de menor a mayor costo de ruta, para cruzar la luz lo menos posible, y envuelve el mensaje en capas con SealedBox de libsodium [SealedBox] (X25519 efímero + XSalsa20-Poly1305; 48 B de sobrecosto):
+
+~~~
+   capa D  = Sealed(destino, [APP(3)      | mensaje (316 B)])
+   capa R3 = Sealed(R3, [REENVIAR(1) | id destino | capa D ])
+   capa R2 = Sealed(R2, [REENVIAR(1) | id R3      | capa R3])
+   capa R1 = Sealed(R1, [REENVIAR(1) | id R2      | capa R2])
+
+   emisor --> R1 --> R2 --> R3 --> destino
+~~~
+
+Para publicar en un tema, la capa de R3 es [DIFUNDIR(2) | 8 B en cero | publicación (365 B)] y R3 inunda la publicación (Sección 3.9).
+
+La celda (el cuerpo de un paquete CELDA) mide siempre 536 B. Cada capa agrega 57 B (48 del SealedBox + 1 de acción + 8 de id). Un nodo que recibe una CELDA con su id en Destino quita su capa: como la celda no dice cuántas capas le quedan, prueba a abrir los primeros 536, 479, 422 y 365 B, y solo uno pasa la verificación de autenticidad. Según la acción, reenvía el contenido (rellenado con bytes aleatorios hasta 536 B) en una CELDA nueva hacia el id siguiente, inunda la publicación o entrega el mensaje a la aplicación. Si ningún tamaño abre la celda, la descarta.
+
+Antes de reenviar, un relay DEBERÍA esperar un tiempo aleatorio (de 0 a 0.5 s por omisión) para dificultar la correlación por tiempos. Las CELDAS se encaminan salto a salto con la tabla de rutas hacia el Destino; los nodos intermedios que solo las encaminan no quitan capas.
+
+Ningún nodo intermedio conoce a la vez el origen y el destino: R1 sabe de quién recibió la celda pero no a quién va; R3 sabe el destino pero no el origen; R2 no sabe ninguno de los dos.
+
+3.9.  Inundación de publicaciones
+
+Un paquete PUBLICACION lleva una publicación de 365 B (Sección 4.2). Cada nodo calcula su huella (BLAKE2b de 16 B); si ya la vio en las últimas 2 horas, la descarta. Si no, la valida con la Capa 7, la guarda y la reenvía a todos sus vecinos menos al que se la dio, con el TTL reducido en 1. El nodo que la originó la recibe igual que los demás, por lo que no se distingue por reenviarla o no.
+
+3.10.  Temporizadores y constantes
+
+~~~
+   +--------------------------------------+------------+------------+
+   | Parámetro                            | UDP        | Faro       |
+   +--------------------------------------+------------+------------+
+   | Intervalo de HELLO                   | 5 s        | 300 s      |
+   | Intervalo de RUTAS                   | 10 s       | 300 s      |
+   | Vida de un vecino / de una ruta      | 3.5 x intervalo         |
+   | Costo del enlace                     | 1 o 2      | 10         |
+   | Actualización disparada (mín.)       | 2 s        | 60 s       |
+   | TTL inicial del paquete              | 16                      |
+   | Métrica inalcanzable                 | 32                      |
+   | Vida de una entrada del directorio   | 1800 s                  |
+   | Renovación de la entrada propia      | 600 s                   |
+   | Memoria de publicaciones vistas      | 7200 s                  |
+   | Espera aleatoria al reenviar celdas  | 0 a 0.5 s               |
+   | Rotación de la MAC del Faro          | cada 1800 s             |
+   +--------------------------------------+-------------------------+
+~~~
+
+{{PAGINA}}
+4.  Capa 7: aplicación anónima
+
+La aplicación es un chat con mensajes privados y un microblog por temas. Los mensajes privados y los temas privados residen únicamente dentro de FaroNet. Todo se guarda en la memoria de los nodos y solo durante su tiempo de vida (TTL): 1 hora por omisión y 24 horas como máximo.
+
+4.1.  Mensaje privado
+
+Va dentro de la capa del destino (Sección 3.8) y mide siempre 316 B:
+
+~~~
+   +-----+------+-------+---------------+---------------+-----------+
+   | Ver | Tipo | Flags | Remitente     | Long. cuerpo  | Cuerpo y  |
+   | 1 B | 1 B  | 1 B   | 8 B           | 2 B           | relleno   |
+   +-----+------+-------+---------------+---------------+-----------+
+
+   Contenido (dentro del cuerpo):
+   +--------------+-------------+----------+-------------+---------+
+   | Id msg (8 B) | Enviado (4) | TTL (4)  | Long. texto | Texto   |
+   |              | s Unix      | s        | (2 B)       | UTF-8   |
+   +--------------+-------------+----------+-------------+---------+
+~~~
+
+- Ver: 1. Tipo: 1 (privado).
+- Flags, bit 0 = IDENTIFICADO. Si está, Remitente es el id del emisor y el cuerpo es un Box de libsodium (X25519 del remitente hacia X25519 del destinatario; 24 B de nonce + 16 B de MAC). El destinatario busca la llave del remitente en el directorio, abre el Box y así comprueba quién escribió. Si no está, Remitente son ceros, el cuerpo es el contenido en claro dentro de la capa cifrada y el mensaje es anónimo.
+- El texto mide como máximo 245 B (identificado) o 285 B (anónimo).
+
+El destinatario DEBE descartar un mensaje cuyo Id msg ya recibió (protección contra repeticiones) y los que vencieron (Enviado + TTL en el pasado).
+
+4.2.  Publicación en un tema
+
+Mide siempre 365 B y no tiene campo de autor:
+
+~~~
+   +-----+------+-------+--------+--------+-------+------+---------+
+   | Ver | Tipo | Visib.| Id msg | Creada | TTL   | LTema| Tema    |
+   | 1 B | 1 B  | 1 B   | 8 B    | 4 B    | 4 B   | 1 B  | 0-32 B  |
+   +-----+------+-------+--------+--------+-------+------+---------+
+   | Long. cuerpo (2 B) | Cuerpo | Relleno aleatorio hasta 365 B   |
+   +--------------------+--------+---------------------------------+
+~~~
+
+- Ver: 1. Tipo: 2.
+- Visibilidad 0 (pública): Tema es el nombre del tema en minúsculas y el Cuerpo es el texto en claro. Solo estas publicaciones salen a Internet (Sección 5).
+- Visibilidad 1 (privada): ver la Sección 4.3.
+
+Un nodo DEBE rechazar (y no reenviar) una publicación vencida (Creada + TTL en el pasado) o creada más de 300 s en el futuro.
+
+4.3.  Temas privados
+
+Los miembros de un tema privado acuerdan en persona una frase. De ella se deriva la clave del tema con Argon2id [RFC9106]: clave = Argon2id(frase, sal = BLAKE2b-128("faronet-tema:" || nombre), 32 B, parámetros "interactive"). El campo Tema lleva una etiqueta, los 8 B de BLAKE2b de ("etiqueta" || clave) en hexadecimal, en vez del nombre, y el Cuerpo es un SecretBox del texto con esa clave. Quien no tiene la frase ve que existe una publicación privada pero no su tema ni su contenido. Las publicaciones privadas nunca salen de FaroNet.
+
+4.4.  Interfaz local del cliente
+
+El cliente de terminal habla con su nodo por TCP en 127.0.0.1 (puerto 7100 por omisión) con una línea JSON [RFC8259] por pedido, por ejemplo {"cmd": "privado", "para": "b1", "texto": "hola"}. El pedido {"cmd": "escuchar"} deja la conexión abierta y el nodo envía los mensajes nuevos a medida que llegan. Esta interfaz no viaja por la red y no forma parte del protocolo entre nodos.
+
+{{PAGINA}}
+5.  Capa 7 pública: gateway y edge
+
+El gateway es un nodo (en la Raspberry Pi de una comunidad) que además envía al Worker, por HTTPS, las publicaciones de temas públicos y su copia del directorio. Ninguna otra información sale de FaroNet.
+
+5.1.  Autenticación del gateway
+
+Cada petición del gateway es un POST con un cuerpo JSON, firmado con la llave Ed25519 del nodo gateway. El mensaje firmado es:
+
+~~~
+   "FARONET-GW-1" LF "POST" LF ruta LF tiempo LF nonce LF cuerpo
+~~~
+
+donde LF es el byte 0x0A, tiempo son los segundos Unix en decimal y nonce son 16 B aleatorios en hexadecimal (32 caracteres). Se envían en las cabeceras X-FaroNet-Tiempo, X-FaroNet-Nonce y X-FaroNet-Firma (firma de 64 B en hexadecimal).
+
+El Worker conoce la llave pública del gateway (no es secreta) y DEBE rechazar con 401 la petición si la firma no es válida o si la hora difiere de la suya en más de 60 s, y con 409 si el nonce ya se usó en los últimos 120 s (protección contra repeticiones). Por eso el gateway DEBE tener el reloj en hora.
+
+5.2.  Rutas del Worker
+
+~~~
+   +--------+-------------------------+-------------------------------+
+   | Método | Ruta                    | Descripción                   |
+   +--------+-------------------------+-------------------------------+
+   | POST   | /gw/publicacion         | gateway: publicación pública  |
+   | POST   | /gw/directorio          | gateway: entradas (hex)       |
+   | GET    | /                       | temas públicos activos        |
+   | GET    | /sala/<tema>            | sala en tiempo real (HTML)    |
+   | GET    | /sala/<tema>/ws         | WebSocket de la sala          |
+   | GET    | /tema/<tema>/feed.xml   | feed Atom del tema            |
+   | GET    | /tema/<tema>/historial  | publicaciones vigentes (JSON) |
+   | GET    | /directorio             | réplica del directorio (JSON) |
+   | PUT    | /buzon/<id>             | depositar en el buzón muerto  |
+   | GET    | /buzon/<id>             | recoger y borrar              |
+   +--------+-------------------------+-------------------------------+
+~~~
+
+- /gw/publicacion lleva {"tema", "texto", "id" (16 hex), "creada", "vence"}. El Worker la guarda en la sala del tema (un Durable Object por tema) hasta "vence" (24 h como máximo), la envía en tiempo real a los navegadores conectados por WebSocket [RFC6455] y la agrega al feed Atom [RFC4287] del tema.
+- /gw/directorio lleva {"entradas": [hex, ...]}. El Worker verifica la firma Ed25519 de cada entrada y publica solo las válidas y vigentes, con su forma binaria y su firma, para que cualquiera las verifique por su cuenta, incluido el id con BLAKE2b, que WebCrypto no ofrece.
+- Las respuestas de error son JSON {"ok": false, "error": texto}, con los códigos de HTTP [RFC9110]: 400 datos inválidos, 401 sin autenticación válida, 404, 405, 409 repetición o conflicto, 413 cuerpo demasiado grande, 429 demasiadas peticiones.
+
+Límite de peticiones por cliente y por minuto: 120 lecturas, 20 WebSockets, 20 operaciones del buzón y 30 peticiones a /gw. Al pasarse, el Worker responde 429.
+
+5.3.  Buzón muerto
+
+Dos personas acuerdan una frase en persona. Cada una calcula Argon2id(frase, sal = BLAKE2b-128("faronet-buzon-muerto"), 64 B, "interactive"): los primeros 32 B, en hexadecimal (64 caracteres), son el identificador opaco del buzón, y los últimos 32 B, la clave.
+
+El blob mide siempre 1024 B: SecretBox(clave, Long. (2 B) || texto || ceros). Se deposita con PUT /buzon/<id> (cabecera opcional X-TTL entre 60 y 86400 s; 3600 por omisión) y se recoge con GET /buzon/<id>. El Worker DEBE borrarlo al entregarlo (solo se lee una vez), DEBE borrarlo al vencer el TTL, DEBE rechazar blobs de otro tamaño (400) y un segundo depósito en el mismo identificador (409). El Worker nunca ve el contenido en claro ni la frase. El buzón se implementa con un Durable Object por identificador, de consistencia fuerte, para que "borrar al leer" sea exacto.
+
+5.4.  Política de no registro
+
+El Worker NO DEBE guardar las cabeceras CF-Connecting-IP ni User-Agent, ni ningún identificador de los clientes. La IP solo se usa, en memoria, para el límite de peticiones: se reduce a un resumen SHA-256 con una sal aleatoria que cambia cada vez que se reinicia el objeto, y los contadores duran 60 s. Las bitácoras de la plataforma se desactivan en la configuración del despliegue. Los nodos y el gateway tampoco guardan bitácoras.
+
+6.  Versionado de los protocolos
+
+Todos los formatos de este documento empiezan con un campo de versión (o la llevan en su texto, como "FARONET-GW-1"): trama del Faro (versión 3), paquete FaroNet (1), cuerpo del HELLO (1), entrada del directorio (1), mensaje privado (1), publicación (1) y firma del gateway (1). Un receptor DEBE descartar lo que tenga una versión que no conoce. Los campos de tamaño variable van precedidos de un campo con su longitud.
+
+{{PAGINA}}
+7.  Consideraciones de privacidad
+
+Esta sección sigue las pautas de [RFC6973].
+
+7.1.  Modelo de amenazas
+
+Se consideran estos adversarios, cada uno por separado salvo que se diga lo contrario:
+
+~~~
+ +--------------------+-----------------------+----------------------+
+ | Adversario         | Qué puede ver         | Qué no puede ver     |
+ +--------------------+-----------------------+----------------------+
+ | Nodo malicioso de  | Tipo y destino del    | Contenido de         |
+ | la mesh (relay)    | siguiente salto de    | privados y temas     |
+ |                    | las celdas que pasan  | privados; origen y   |
+ |                    | por él; publicaciones | destino de un mismo  |
+ |                    | públicas; el          | mensaje a la vez     |
+ |                    | directorio (público)  |                      |
+ +--------------------+-----------------------+----------------------+
+ | Observador del     | Que hay tráfico,      | Contenido; longitud  |
+ | medio físico (luz, | cuándo y cuántos      | real de los          |
+ | WiFi)              | paquetes (de dos      | mensajes; origen;    |
+ |                    | tamaños); MAC del     | con el enlace        |
+ |                    | Faro (rota); en claro | cifrado, los ids de  |
+ |                    | sin cifrado de        | HELLO y RUTAS        |
+ |                    | enlace: ids en HELLO  |                      |
+ |                    | y RUTAS               |                      |
+ +--------------------+-----------------------+----------------------+
+ | Operador del       | Las publicaciones     | Privados, temas      |
+ | gateway            | públicas antes de     | privados, autor de   |
+ |                    | salir                 | las publicaciones    |
+ +--------------------+-----------------------+----------------------+
+ | Proveedor del edge | Publicaciones         | Autor; privados;     |
+ | (Cloudflare)       | públicas; IP del      | contenido del buzón; |
+ |                    | gateway y de los      | la frase del buzón   |
+ |                    | visitantes; tamaño y  |                      |
+ |                    | hora de los blobs     |                      |
+ +--------------------+-----------------------+----------------------+
+ | Coalición de       | Pueden correlacionar  | Contenido            |
+ | relays (R1 y R3 de | por tiempos el origen |                      |
+ | un mismo circuito) | y el destino          |                      |
+ +--------------------+-----------------------+----------------------+
+~~~
+
+Fuera del alcance: un adversario global que observe todos los enlaces a la vez, la toma física de un nodo encendido antes del pánico y la seguridad del sistema operativo de los nodos.
+
+7.2.  Minimización de datos
+
+- Los paquetes no tienen campo de origen.
+- Todos los paquetes miden 220 o 550 B (260 o 590 con el enlace cifrado), las celdas 536 B, los mensajes privados 316 B, las publicaciones 365 B y los blobs del buzón 1024 B; el relleno es aleatorio.
+- Las publicaciones no tienen autor. Los mensajes privados PUEDEN ser anónimos.
+- El nombre de un tema privado no viaja: solo una etiqueta derivada de su clave.
+- La dirección física del Faro es aleatoria y se rota cada 30 minutos. Con el cifrado del enlace, un observador de la luz no puede asociar la MAC nueva con la anterior ni con el nodo.
+- Ningún componente guarda bitácoras con IP, MAC ni ids. Los mensajes y publicaciones guardados tienen TTL y viven solo en memoria; el único dato persistente de un nodo es su semilla, que el pánico borra.
+- El Worker no guarda IP ni User-Agent (Sección 5.4).
+
+7.3.  Anonimato y desvinculación
+
+El conjunto de anonimato de un mensaje son todos los nodos de la mesh que pudieron originarlo: el paquete no tiene origen, el nodo que origina una celda la envía igual que un relay que la reenvía, y la publicación la inunda R3, no su autor. Un relay R1 que es vecino directo del emisor sabe que la celda le llegó de ese vecino, pero no sabe si la originó o la reenvió.
+
+7.4.  Amenazas de RFC 6973 y su tratamiento
+
+- Vigilancia: el contenido viaja cifrado de extremo a extremo y los tamaños son fijos. El análisis de tráfico por tiempos se dificulta con la espera aleatoria de los relays, pero no se elimina.
+- Compromiso de datos guardados: no hay datos guardados salvo la semilla del nodo (archivo 0600) y la MAC; el botón de pánico los borra junto con todo lo que hay en memoria.
+- Intrusión: el límite de peticiones del Worker, el TTL de los paquetes y la detección de duplicados de las publicaciones acotan el abuso.
+- Atribución errónea: los mensajes identificados se autentican con Box; los anónimos no afirman ningún autor.
+- Correlación: los ids de nodo son estables y públicos (están en el directorio), como los de los relays de Tor [Tor]. Por eso la privacidad de los usuarios se apoya en que el paquete no tiene origen y en el enrutamiento por capas, no en ocultar qué nodos existen.
+- Identificación: el alias del directorio es elegido por cada nodo y PUEDE ser un seudónimo.
+- Uso secundario y divulgación: el Worker solo recibe publicaciones que sus autores marcaron como públicas.
+- Exclusión: cada usuario elige si un mensaje es identificado o anónimo, si un tema es público o privado y el TTL de lo que publica.
+
+7.5.  Lo que sigue viendo el proveedor del edge
+
+Aunque el Worker no guarde la IP ni el User-Agent, el proveedor del edge termina la conexión TLS y por lo tanto ve las peticiones en claro: la IP y la hora de cada visitante y del gateway, las publicaciones públicas y el tamaño (siempre 1024 B) y la hora de los depósitos del buzón. No ve el autor de las publicaciones, que se perdió en la cebolla, ni el contenido del buzón, que viaja cifrado de extremo a extremo. Los visitantes que necesiten ocultar su IP PUEDEN usar Tor o una VPN.
+
+8.  Consideraciones de seguridad
+
+- Criptografía: solo primitivas de libsodium (Ed25519, X25519, XSalsa20-Poly1305, BLAKE2b, Argon2id) a través de PyNaCl, y Ed25519 y SHA-256 de WebCrypto en el Worker. No se implementó ninguna primitiva propia; el diseño de los protocolos sí es de los autores.
+- Integridad: las tramas del Faro tienen CRC-16 contra errores del medio, que no protege contra un atacante. La integridad frente a atacantes la dan el MAC de Poly1305 de cada capa de la cebolla, el cifrado del enlace del Faro y las firmas del directorio y del gateway.
+- Suplantación: el id de un nodo es el resumen de su llave, por lo que no se puede publicar una entrada con el id de otro. Sin el cifrado del enlace, cualquiera con un emisor infrarrojo puede inyectar tramas en la luz; con él, los paquetes sin la clave se descartan.
+- Ataque Sybil: cualquiera puede unirse a la mesh y publicar entradas. Un adversario que controle muchos relays aumenta la probabilidad de controlar R1 y R3 de un circuito y correlacionar origen y destino por tiempos. FaroNet está pensada para comunidades pequeñas; una versión futura podría usar relays de entrada fijos (guards), como Tor.
+- Repeticiones: el Worker rechaza nonces repetidos y horas fuera de ventana; el destinatario descarta mensajes privados repetidos o vencidos; las publicaciones repetidas se descartan por su huella.
+- Inundación y denegación de servicio: el TTL y la detección de duplicados limitan la inundación, y el Faro descarta paquetes de control cuando su cola está llena. Un nodo malicioso puede de todos modos saturar el Faro, que es lento por naturaleza.
+- Pánico: Python no permite garantizar que no queden copias de una llave en la memoria, y la memoria flash de la tarjeta SD no garantiza que sobrescribir un archivo borre el bloque físico. El pánico reduce el riesgo pero no reemplaza el cifrado del disco.
+- Reloj: la vigencia del directorio, los TTL y la ventana de la firma del gateway dependen de la hora. Un nodo con la hora muy desfasada no aceptará entradas válidas; el gateway no podrá publicar.
+- Interfaz local: el API del cliente escucha solo en 127.0.0.1; cualquier usuario de la misma computadora puede usarlo.
+- Aplicación web: el Worker inserta el contenido de los usuarios solo como texto (nunca como HTML), escapa el XML de los feeds y envía una Content-Security-Policy que solo permite su propio script.
+
+9.  Consideraciones de IANA
+
+Este documento no tiene acciones para IANA. Los números que usa son locales al proyecto: el Protocolo 0x0002 de la trama del Faro, el puerto UDP 7000 y el grupo multicast 239.255.70.79 (alcance administrativo [RFC2365]), puerto 47079.
+
+{{PAGINA}}
+10.  Referencias
+
+10.1.  Referencias normativas
+
+~~~
+   [RFC2119]  Bradner, S., "Key words for use in RFCs to Indicate
+              Requirement Levels", BCP 14, RFC 2119,
+              DOI 10.17487/RFC2119, March 1997,
+              <https://www.rfc-editor.org/info/rfc2119>.
+
+   [RFC8174]  Leiba, B., "Ambiguity of Uppercase vs Lowercase in
+              RFC 2119 Key Words", BCP 14, RFC 8174,
+              DOI 10.17487/RFC8174, May 2017,
+              <https://www.rfc-editor.org/info/rfc8174>.
+
+   [RFC8032]  Josefsson, S. and I. Liusvaara, "Edwards-Curve Digital
+              Signature Algorithm (EdDSA)", RFC 8032,
+              DOI 10.17487/RFC8032, January 2017,
+              <https://www.rfc-editor.org/info/rfc8032>.
+
+   [RFC7748]  Langley, A., Hamburg, M., and S. Turner, "Elliptic Curves
+              for Security", RFC 7748, DOI 10.17487/RFC7748,
+              January 2016, <https://www.rfc-editor.org/info/rfc7748>.
+
+   [RFC7693]  Saarinen, M-J., Ed. and J-P. Aumasson, "The BLAKE2
+              Cryptographic Hash and Message Authentication Code
+              (MAC)", RFC 7693, DOI 10.17487/RFC7693, November 2015,
+              <https://www.rfc-editor.org/info/rfc7693>.
+
+   [RFC9106]  Biryukov, A., Dinu, D., Khovratovich, D., and S.
+              Josefsson, "Argon2 Memory-Hard Function for Password
+              Hashing and Proof-of-Work Applications", RFC 9106,
+              DOI 10.17487/RFC9106, September 2021,
+              <https://www.rfc-editor.org/info/rfc9106>.
+
+   [RFC9110]  Fielding, R., Ed., Nottingham, M., Ed., and J. Reschke,
+              Ed., "HTTP Semantics", STD 97, RFC 9110,
+              DOI 10.17487/RFC9110, June 2022,
+              <https://www.rfc-editor.org/info/rfc9110>.
+
+   [RFC6455]  Fette, I. and A. Melnikov, "The WebSocket Protocol",
+              RFC 6455, DOI 10.17487/RFC6455, December 2011,
+              <https://www.rfc-editor.org/info/rfc6455>.
+
+   [RFC4287]  Nottingham, M., Ed. and R. Sayre, Ed., "The Atom
+              Syndication Format", RFC 4287, DOI 10.17487/RFC4287,
+              December 2005, <https://www.rfc-editor.org/info/rfc4287>.
+
+   [RFC8259]  Bray, T., Ed., "The JavaScript Object Notation (JSON)
+              Data Interchange Format", STD 90, RFC 8259,
+              DOI 10.17487/RFC8259, December 2017,
+              <https://www.rfc-editor.org/info/rfc8259>.
+
+   [XSalsa20] Bernstein, D. J., "Extending the Salsa20 nonce",
+              Workshop record of Symmetric Key Encryption Workshop,
+              2011, <https://cr.yp.to/snuffle/xsalsa-20110204.pdf>.
+
+   [SealedBox] libsodium, "Sealed boxes",
+              <https://doc.libsodium.org/public-key_cryptography/
+              sealed_boxes>.
+
+   [CRC]      Cook, G., "Catalogue of parametrised CRC algorithms:
+              CRC-16/IBM-3740 (alias CRC-16/CCITT-FALSE)",
+              <https://reveng.sourceforge.io/crc-catalogue/16.htm>.
+~~~
+
+10.2.  Referencias informativas
+
+~~~
+   [RFC6973]  Cooper, A., Tschofenig, H., Aboba, B., Peterson, J.,
+              Morris, J., Hansen, M., and R. Smith, "Privacy
+              Considerations for Internet Protocols", RFC 6973,
+              DOI 10.17487/RFC6973, July 2013,
+              <https://www.rfc-editor.org/info/rfc6973>.
+
+   [RFC7322]  Flanagan, H. and S. Ginoza, "RFC Style Guide", RFC 7322,
+              DOI 10.17487/RFC7322, September 2014,
+              <https://www.rfc-editor.org/info/rfc7322>.
+
+   [RFC2453]  Malkin, G., "RIP Version 2", STD 56, RFC 2453,
+              DOI 10.17487/RFC2453, November 1998,
+              <https://www.rfc-editor.org/info/rfc2453>.
+
+   [RFC2365]  Meyer, D., "Administratively Scoped IP Multicast",
+              BCP 23, RFC 2365, DOI 10.17487/RFC2365, July 1998,
+              <https://www.rfc-editor.org/info/rfc2365>.
+
+   [Tor]      Dingledine, R., Mathewson, N., and P. Syverson, "Tor:
+              The Second-Generation Onion Router", Proceedings of the
+              13th USENIX Security Symposium, 2004.
+
+   [PyNaCl]   PyCA, "PyNaCl: Python binding to libsodium",
+              <https://pynacl.readthedocs.io/>.
+
+   [NEC]      SB-Projects, "NEC Protocol (infrared remote control)",
+              <https://www.sbprojects.net/knowledge/ir/nec.php>.
+
+   [VS1838B]  "VS1838B infrared receiver module", hoja de datos.
+
+   [Scapy]    Biondi, P. and the Scapy community, "Scapy",
+              <https://scapy.net/>.
+~~~
+
+{{PAGINA}}
+Apéndice A.  Vectores de prueba
+
+Estos vectores los calcula el código de referencia (RFC/vectores.py). El programa RFC/verificar_rfc.py comprueba que el texto de este apéndice coincide con lo que produce el código. Los números están en hexadecimal; la primera columna es el desplazamiento.
+
+A.1.  Trama DATOS de la Capa 1
+
+{{VECTOR:TRAMA_DATOS}}
+
+A.2.  Trama ACK de la Capa 1
+
+{{VECTOR:TRAMA_ACK}}
+
+A.3.  Un byte en la luz
+
+{{VECTOR:BYTE_LUZ}}
+
+A.4.  Paquete HELLO
+
+{{VECTOR:PAQUETE_HELLO}}
+
+A.5.  Entrada del directorio
+
+{{VECTOR:ENTRADA}}
+
+A.6.  Firma del gateway
+
+{{VECTOR:FIRMA_GATEWAY}}
+
+A.7.  Tamaños de la cebolla
+
+{{VECTOR:TAMANOS_CEBOLLA}}
+
+A.8.  Clave y etiqueta de un tema privado
+
+{{VECTOR:ETIQUETA_TEMA}}
+
+A.9.  Identificador del buzón muerto
+
+{{VECTOR:ID_BUZON}}
+
+Apéndice B.  Decisiones de diseño
+
+- Cebolla por paquete en vez de circuitos negociados. El enunciado recomienda circuitos virtuales negociados, como los de Tor. Negociar un circuito requiere varias idas y vueltas por cada salto, y cada cruce de la luz tarda decenas de segundos a unos 25 B/s. Con la cebolla por paquete cada celda lleva su propia ruta y no hace falta ninguna negociación previa. El costo es que cada celda paga 3 x 57 B de capas y que no hay estado de circuito que reutilizar.
+- Tamaños fijos de 220 y 550 B. Son múltiplos de los 110 B de datos de una trama del Faro y dejan 316 B para un mensaje privado (unos 245 caracteres). Paquetes más grandes harían más lento cada cruce de la luz; más pequeños no alcanzarían para tres capas de cebolla.
+- Directorio por inundación. Evita un servidor central, que sería a la vez un punto único de falla y un lugar donde se concentran los metadatos.
+- Vector de distancias. Es simple, converge bien en redes pequeñas y no necesita conocer la topología completa.
+
+=Direcciones de los autores=
+
+~~~
+   Alberto Guerrero Gabay
+   Escuela de Ingeniería en Computación
+   Instituto Tecnológico de Costa Rica
+   Alajuela, Costa Rica
+   Correo: aguerrero@estudiantec.cr
+
+   Christopher Alvarado Aguilar
+   Escuela de Ingeniería en Computación
+   Instituto Tecnológico de Costa Rica
+   Alajuela, Costa Rica
+   Correo: chalvarado@estudiantec.cr
+~~~

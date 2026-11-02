@@ -1,17 +1,17 @@
 """
 paquete.py - Formato del paquete de FaroNet (capas 2 y 3), versión 1.
 
-Todo lo que viaja entre dos nodos vecinos (por UDP o por el Faro) es un
-paquete de TAMAÑO FIJO. Hay solo dos tamaños, según el tipo:
+Todo lo que viaja entre dos nodos vecinos, ya sea por UDP o por el Faro, es
+un paquete de tamaño fijo. Solo existen dos tamaños, que dependen del tipo:
 
     CONTROL = 220 bytes   (2 fragmentos de 110 B del Faro)  HELLO, RUTAS, DIRECTORIO
     DATOS   = 550 bytes   (5 fragmentos de 110 B del Faro)  CELDA, PUBLICACION
 
-Así un observador del medio no puede saber cuánto mide un mensaje: todo
-mensaje de chat, corto o largo, ocupa una celda de 550 bytes. Los tamaños
-son múltiplos de 110 B (datos de una trama v3 del Faro) para no desperdiciar
-tramas, y son pequeños porque el Faro va a unos 25 bytes/s: una celda tarda
-unos 22 s en cruzar la luz.
+De esta forma, quien observa el medio no puede saber cuánto mide un mensaje:
+cualquier mensaje de chat, corto o largo, ocupa una celda de 550 bytes. Los
+tamaños son múltiplos de 110 B, que es lo que cabe en una trama v3 del Faro,
+para no desperdiciar tramas. Además son pequeños porque el Faro transmite a
+unos 20-30 bytes/s, y una celda ya tarda entre 30 y 40 s en cruzar la luz.
 
     +---------+------+-----+-------+-----------------+----------+--------+---------+
     | Versión | Tipo | TTL | Flags | Destino (nodo)  | Longitud | Cuerpo | Relleno |
@@ -19,15 +19,17 @@ unos 22 s en cruzar la luz.
     +---------+------+-----+-------+-----------------+----------+--------+---------+
     |<------------------- cabecera: 14 bytes -------------------->|
 
-    Versión  : 1. Siempre el primer byte; un nodo descarta versiones que no conoce.
-    Tipo     : ver TIPO_* abajo.
-    TTL      : saltos que le quedan; se resta 1 en cada nodo (evita ciclos).
-    Destino  : identificador de 8 bytes del nodo al que va (solo CELDA);
-               ceros en los paquetes entre vecinos y en las inundaciones.
-               NO existe campo de origen: el paquete no dice quién lo creó.
-    Longitud : bytes útiles del cuerpo (campo dinámico); en CELDA y
-               PUBLICACION es siempre el máximo, para no filtrar nada.
-    Relleno  : bytes aleatorios hasta completar el tamaño fijo.
+    Versión  : vale 1 y siempre ocupa el primer byte. Un nodo descarta las
+               versiones que no conoce.
+    Tipo     : uno de los TIPO_* definidos más abajo.
+    TTL      : saltos que le quedan al paquete. Cada nodo le resta 1, lo que
+               evita que un paquete circule para siempre.
+    Destino  : identificador de 8 bytes del nodo al que va (solo en CELDA).
+               Va en ceros en los paquetes entre vecinos y en las inundaciones.
+               No existe un campo de origen: el paquete no dice quién lo creó.
+    Longitud : bytes útiles del cuerpo (el campo dinámico). En CELDA y
+               PUBLICACION siempre vale el máximo, para no filtrar nada.
+    Relleno  : bytes aleatorios que completan el tamaño fijo.
 """
 import os
 import struct
@@ -35,11 +37,11 @@ from dataclasses import dataclass
 
 VERSION = 1
 
-TIPO_HELLO = 1          # "estoy aquí": descubrimiento de vecinos
-TIPO_RUTAS = 2          # vector de distancias (enrutamiento dinámico)
+TIPO_HELLO = 1          # un nodo avisa que está ahí (descubrimiento de vecinos)
+TIPO_RUTAS = 2          # vector de distancias del enrutamiento dinámico
 TIPO_DIRECTORIO = 3     # una entrada firmada del directorio de nodos
-TIPO_CELDA = 4          # celda cebolla (onion) hacia un nodo
-TIPO_PUBLICACION = 5    # publicación de un tema, inundada a toda la mesh
+TIPO_CELDA = 4          # celda de la cebolla (onion) que va hacia un nodo
+TIPO_PUBLICACION = 5    # publicación de un tema, que se inunda en toda la mesh
 
 NOMBRES = {TIPO_HELLO: "HELLO", TIPO_RUTAS: "RUTAS", TIPO_DIRECTORIO: "DIRECTORIO",
            TIPO_CELDA: "CELDA", TIPO_PUBLICACION: "PUBLICACION"}
@@ -89,7 +91,7 @@ class Paquete:
         cabecera = _CABECERA.pack(self.version, self.tipo, self.ttl, self.flags,
                                   self.destino, len(self.cuerpo))
         crudo = cabecera + self.cuerpo
-        return crudo + os.urandom(tam - len(crudo))     # relleno aleatorio
+        return crudo + os.urandom(tam - len(crudo))     # se completa con relleno aleatorio
 
     @classmethod
     def desde_bytes(cls, crudo):
@@ -109,7 +111,8 @@ class Paquete:
 
 
 # ---- Cuerpos de los paquetes de control --------------------------------------
-# HELLO:  versión del cuerpo (1) | id del nodo (8) | intervalo de hello en s (2)
+# HELLO: versión del cuerpo (1 B), id del nodo (8 B) y cada cuántos segundos
+# repite su HELLO (2 B).
 _HELLO = struct.Struct(">B8sH")
 
 
@@ -124,12 +127,14 @@ def leer_hello(cuerpo):
     return id_nodo, intervalo
 
 
-# RUTAS:  cantidad (1) | [ destino (8) | métrica (1) ] x cantidad
+# RUTAS: cantidad de rutas (1 B) y, por cada una, el destino (8 B) y su
+# métrica (1 B).
 MAX_RUTAS_POR_PAQUETE = (MAX_CUERPO_CONTROL - 1) // 9       # 22
 
 
 def armar_rutas(lista):
-    """lista de (id_destino, metrica). Devuelve uno o más paquetes RUTAS."""
+    """Recibe una lista de pares (id_destino, métrica) y la reparte en uno o
+    más paquetes RUTAS, según cuántas rutas quepan en cada uno."""
     paquetes = []
     for i in range(0, max(len(lista), 1), MAX_RUTAS_POR_PAQUETE):
         parte = lista[i:i + MAX_RUTAS_POR_PAQUETE]
