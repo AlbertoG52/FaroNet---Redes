@@ -48,6 +48,9 @@ from nodo import Nodo                          # noqa: E402
 from servicio import ServicioChat              # noqa: E402
 
 
+CODIGO_PANICO = 3      # código de salida del proceso cuando terminó por el pánico
+
+
 def crear_faro(a):
     from DispositivoLuzAdaptador import DispositivoLuzAdaptador, DispositivoLuzSimulado
     if a.faro == "simulado":
@@ -200,6 +203,8 @@ def main():
     if nodo.panico_activado:
         print("PÁNICO: llaves y datos borrados. Nodo detenido.", flush=True)
     nodo.detener()
+    if nodo.panico_activado:
+        sys.exit(CODIGO_PANICO)       # pi_comunidad.py lo usa para borrar también los otros nodos
 
 
 if __name__ == "__main__":

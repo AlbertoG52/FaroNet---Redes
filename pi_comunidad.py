@@ -25,17 +25,30 @@ Ctrl+C detiene los 3 nodos de esta Pi.
 import argparse
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
+CODIGO_PANICO = 3      # el mismo que en faronet_nodo.py
 
 LADOS = {
     #     alias Faro, UDP, API ;  nodos extra (alias, UDP, API)
     "A": (("faroA", 7004, 7104), [("a1", 7001, 7101), ("a2", 7002, 7102)]),
     "B": (("faroB", 7013, 7113), [("b1", 7011, 7111), ("b2", 7012, 7112)]),
 }
+
+
+def panico_en(api):
+    """Pide el pánico a un nodo por su API local: borra sus llaves y se detiene."""
+    try:
+        with socket.create_connection(("127.0.0.1", api), timeout=5) as s:
+            s.sendall(b'{"cmd": "panico"}\n')
+            s.makefile("rb").readline()
+        return True
+    except OSError:
+        return False
 
 
 def main():
@@ -92,6 +105,12 @@ def main():
                 if proc.poll() is not None:
                     print(f"[el nodo {alias} terminó (código {proc.returncode})]")
                     procesos.remove((alias, proc))
+                    if alias == faro_alias and proc.returncode == CODIGO_PANICO:
+                        # El botón de pánico es de toda la Pi: los otros nodos de esta
+                        # Pi también borran sus llaves y se detienen.
+                        for otro, _udp, api in extras:
+                            ok = panico_en(api)
+                            print(f"[pánico también en {otro}: {'hecho' if ok else 'no respondió'}]")
             if not procesos:
                 return
     except KeyboardInterrupt:
