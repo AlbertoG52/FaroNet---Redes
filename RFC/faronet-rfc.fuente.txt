@@ -262,7 +262,7 @@ Sobre Ethernet o WiFi cada paquete viaja en un datagrama UDP, por omisión al pu
 
 3.4.  Transporte sobre el Faro
 
-Sobre el Faro cada paquete es un mensaje de la Capa 1 con Protocolo 0x0002. Los paquetes dirigidos a un vecino van a su MAC (con ACK, Sección 2.8); los HELLO van a difusión. Costo del enlace: 10. Como el Faro va a unos 25 B/s, los HELLO y las RUTAS se envían cada 90 s y, si hay 12 o más envíos pendientes, se descartan los paquetes de control nuevos (los de datos siempre se encolan).
+Sobre el Faro cada paquete es un mensaje de la Capa 1 con Protocolo 0x0002. Los paquetes dirigidos a un vecino van a su MAC (con ACK, Sección 2.8); los HELLO van a difusión. Costo del enlace: 10. Como el Faro va a unos 20 a 30 B/s, los HELLO y las RUTAS se envían cada 300 s. El nodo DEBE pasarle al Faro un solo envío a la vez desde una fila propia, en la que los paquetes de datos (CELDA y PUBLICACION) salen antes que los de control. Un paquete de control nuevo DEBE reemplazar al que todavía espera en la fila con el mismo tipo, el mismo destino y el mismo id al inicio del cuerpo (el nodo del HELLO, el primer destino de RUTAS o el nodo de la entrada del DIRECTORIO). Si aun así hay 12 paquetes de control en espera, los nuevos se descartan; los de datos siempre se encolan.
 
 Cifrado del enlace (RECOMENDADO): los dos Faros PUEDEN compartir una frase. De ella se deriva una clave de 32 B con Argon2id [RFC9106] (sal "faronet-enlace-1", parámetros "interactive" de libsodium: 2 pasadas, 64 MiB), y cada paquete viaja dentro de un SecretBox (XSalsa20-Poly1305 [XSalsa20], 24 B de nonce aleatorio + 16 B de MAC). Los paquetes pasan a medir 260 y 590 B, siempre iguales entre sí. Un paquete que no se pueda descifrar DEBE descartarse. Sin este cifrado, un observador de la luz ve los HELLO y RUTAS, que contienen ids, y la rotación de la MAC no impediría asociarla con el nodo (Sección 7).
 
@@ -275,7 +275,7 @@ Cifrado del enlace (RECOMENDADO): los dos Faros PUEDEN compartir una frase. De e
    +-----------+---------------------------+-----------------------+
 ~~~
 
-Cada nodo envía un HELLO por cada interfaz cada "Intervalo" segundos (5 s por UDP, 90 s por el Faro). Quien lo recibe asocia la dirección de la interfaz (IP:puerto o MAC) con el id. Un vecino se borra si no se oye nada de él durante 3.5 veces su intervalo. Al descubrir un vecino nuevo, el nodo le responde con un HELLO, su vector de rutas y todas las entradas del directorio que conoce. Un nodo DEBE ignorar los HELLO con su propio id y los paquetes de direcciones de las que aún no recibió un HELLO (a esas les responde con un HELLO).
+Cada nodo envía un HELLO por cada interfaz cada "Intervalo" segundos (5 s por UDP, 300 s por el Faro). Quien lo recibe asocia la dirección de la interfaz (IP:puerto o MAC) con el id. Un vecino se borra si no se oye nada de él durante 3.5 veces su intervalo. Al descubrir un vecino nuevo, el nodo le responde con un HELLO, su vector de rutas y todas las entradas del directorio que conoce. Un nodo DEBE ignorar los HELLO con su propio id y los paquetes de direcciones de las que aún no recibió un HELLO (a esas les responde con un HELLO).
 
 3.6.  Enrutamiento dinámico (RUTAS)
 
@@ -290,7 +290,7 @@ FaroNet usa enrutamiento por vector de distancias (Bellman-Ford distribuido, com
 
 Caben 22 rutas por paquete; si hay más, se envían varios. La métrica 32 significa "inalcanzable". Un nodo se anuncia a sí mismo con métrica 0. Al recibir el vector de un vecino por su enlace de menor costo, el nodo calcula costo = métrica + costo del enlace y aplica: si el destino no estaba, lo agrega; si la ruta actual sale por ese mismo vecino, la reemplaza (o la borra si llega a 32); si no, la reemplaza solo si el costo es menor.
 
-Para evitar ciclos se usa horizonte dividido con envenenamiento: a un vecino se le anuncian con métrica 32 los destinos a los que se llega por él. Las rutas vencen a las 3.5 veces el intervalo de anuncio del enlace (10 s por UDP, 90 s por el Faro). Cuando la tabla cambia se envía una actualización disparada por UDP, como máximo cada 2 s.
+Para evitar ciclos se usa horizonte dividido con envenenamiento: a un vecino se le anuncian con métrica 32 los destinos a los que se llega por él. Las rutas vencen a las 3.5 veces el intervalo de anuncio del enlace (10 s por UDP, 300 s por el Faro). Cuando la tabla cambia se envía una actualización disparada, como máximo cada 2 s por UDP y cada 60 s por el Faro.
 
 3.7.  Directorio de nodos
 
@@ -341,11 +341,11 @@ Un paquete PUBLICACION lleva una publicación de 365 B (Sección 4.2). Cada nodo
    +--------------------------------------+------------+------------+
    | Parámetro                            | UDP        | Faro       |
    +--------------------------------------+------------+------------+
-   | Intervalo de HELLO                   | 5 s        | 90 s       |
-   | Intervalo de RUTAS                   | 10 s       | 90 s       |
+   | Intervalo de HELLO                   | 5 s        | 300 s      |
+   | Intervalo de RUTAS                   | 10 s       | 300 s      |
    | Vida de un vecino / de una ruta      | 3.5 x intervalo         |
    | Costo del enlace                     | 1 o 2      | 10         |
-   | Actualización disparada (mín.)       | 2 s        | no         |
+   | Actualización disparada (mín.)       | 2 s        | 60 s       |
    | TTL inicial del paquete              | 16                      |
    | Métrica inalcanzable                 | 32                      |
    | Vida de una entrada del directorio   | 1800 s                  |

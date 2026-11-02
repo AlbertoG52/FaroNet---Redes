@@ -613,9 +613,15 @@ RFC FARONET-1       FaroNet: Faro y red mesh anonima      Noviembre 2026
    Sobre el Faro cada paquete es un mensaje de la Capa 1 con Protocolo
    0x0002. Los paquetes dirigidos a un vecino van a su MAC (con ACK,
    Seccion 2.8); los HELLO van a difusion. Costo del enlace: 10. Como el
-   Faro va a unos 25 B/s, los HELLO y las RUTAS se envian cada 90 s y,
-   si hay 12 o mas envios pendientes, se descartan los paquetes de
-   control nuevos (los de datos siempre se encolan).
+   Faro va a unos 20 a 30 B/s, los HELLO y las RUTAS se envian cada 300
+   s. El nodo DEBE pasarle al Faro un solo envio a la vez desde una fila
+   propia, en la que los paquetes de datos (CELDA y PUBLICACION) salen
+   antes que los de control. Un paquete de control nuevo DEBE reemplazar
+   al que todavia espera en la fila con el mismo tipo, el mismo destino
+   y el mismo id al inicio del cuerpo (el nodo del HELLO, el primer
+   destino de RUTAS o el nodo de la entrada del DIRECTORIO). Si aun asi
+   hay 12 paquetes de control en espera, los nuevos se descartan; los de
+   datos siempre se encolan.
 
    Cifrado del enlace (RECOMENDADO): los dos Faros PUEDEN compartir una
    frase. De ella se deriva una clave de 32 B con Argon2id [RFC9106]
@@ -636,12 +642,6 @@ RFC FARONET-1       FaroNet: Faro y red mesh anonima      Noviembre 2026
    +-----------+---------------------------+-----------------------+
 
    Cada nodo envia un HELLO por cada interfaz cada "Intervalo" segundos
-   (5 s por UDP, 90 s por el Faro). Quien lo recibe asocia la direccion
-   de la interfaz (IP:puerto o MAC) con el id. Un vecino se borra si no
-   se oye nada de el durante 3.5 veces su intervalo. Al descubrir un
-   vecino nuevo, el nodo le responde con un HELLO, su vector de rutas y
-   todas las entradas del directorio que conoce. Un nodo DEBE ignorar
-   los HELLO con su propio id y los paquetes de direcciones de las que
 
 
 
@@ -649,6 +649,12 @@ Guerrero & Alvarado               Experimental               [Pagina 11]
 
 RFC FARONET-1       FaroNet: Faro y red mesh anonima      Noviembre 2026
 
+   (5 s por UDP, 300 s por el Faro). Quien lo recibe asocia la direccion
+   de la interfaz (IP:puerto o MAC) con el id. Un vecino se borra si no
+   se oye nada de el durante 3.5 veces su intervalo. Al descubrir un
+   vecino nuevo, el nodo le responde con un HELLO, su vector de rutas y
+   todas las entradas del directorio que conoce. Un nodo DEBE ignorar
+   los HELLO con su propio id y los paquetes de direcciones de las que
    aun no recibio un HELLO (a esas les responde con un HELLO).
 
 3.6.  Enrutamiento dinamico (RUTAS)
@@ -673,8 +679,9 @@ RFC FARONET-1       FaroNet: Faro y red mesh anonima      Noviembre 2026
    Para evitar ciclos se usa horizonte dividido con envenenamiento: a un
    vecino se le anuncian con metrica 32 los destinos a los que se llega
    por el. Las rutas vencen a las 3.5 veces el intervalo de anuncio del
-   enlace (10 s por UDP, 90 s por el Faro). Cuando la tabla cambia se
-   envia una actualizacion disparada por UDP, como maximo cada 2 s.
+   enlace (10 s por UDP, 300 s por el Faro). Cuando la tabla cambia se
+   envia una actualizacion disparada, como maximo cada 2 s por UDP y
+   cada 60 s por el Faro.
 
 3.7.  Directorio de nodos
 
@@ -694,19 +701,19 @@ RFC FARONET-1       FaroNet: Faro y red mesh anonima      Noviembre 2026
 
    Un nodo DEBE aceptar una entrada solo si la firma es valida, si el id
    es BLAKE2b-64 de la llave, si esta vigente (Creada - 300 s <= ahora <
-   Expira) y si es mas nueva (mayor Creada) que la que tiene del mismo
-   id. Cuando acepta una entrada nueva, la reenvia a todos sus vecinos
-   menos al que se la dio (inundacion). Asi todos los nodos tienen una
-   copia del directorio, sin servidor central. Las entradas duran 30
-   minutos; cada nodo renueva la suya cada 10. La llave X25519 para
-   cifrar hacia un nodo se obtiene de su llave Ed25519.
-
 
 
 
 Guerrero & Alvarado               Experimental               [Pagina 12]
 
 RFC FARONET-1       FaroNet: Faro y red mesh anonima      Noviembre 2026
+
+   Expira) y si es mas nueva (mayor Creada) que la que tiene del mismo
+   id. Cuando acepta una entrada nueva, la reenvia a todos sus vecinos
+   menos al que se la dio (inundacion). Asi todos los nodos tienen una
+   copia del directorio, sin servidor central. Las entradas duran 30
+   minutos; cada nodo renueva la suya cada 10. La llave X25519 para
+   cifrar hacia un nodo se obtiene de su llave Ed25519.
 
 3.8.  Enrutamiento por capas (cebolla)
 
@@ -753,13 +760,6 @@ RFC FARONET-1       FaroNet: Faro y red mesh anonima      Noviembre 2026
    Cada nodo calcula su huella (BLAKE2b de 16 B); si ya la vio en las
    ultimas 2 horas, la descarta. Si no, la valida con la Capa 7, la
    guarda y la reenvia a todos sus vecinos menos al que se la dio, con
-   el TTL reducido en 1. El nodo que la origino la recibe igual que los
-   demas, por lo que no se distingue por reenviarla o no.
-
-
-
-
-
 
 
 
@@ -767,16 +767,19 @@ Guerrero & Alvarado               Experimental               [Pagina 13]
 
 RFC FARONET-1       FaroNet: Faro y red mesh anonima      Noviembre 2026
 
+   el TTL reducido en 1. El nodo que la origino la recibe igual que los
+   demas, por lo que no se distingue por reenviarla o no.
+
 3.10.  Temporizadores y constantes
 
    +--------------------------------------+------------+------------+
    | Parametro                            | UDP        | Faro       |
    +--------------------------------------+------------+------------+
-   | Intervalo de HELLO                   | 5 s        | 90 s       |
-   | Intervalo de RUTAS                   | 10 s       | 90 s       |
+   | Intervalo de HELLO                   | 5 s        | 300 s      |
+   | Intervalo de RUTAS                   | 10 s       | 300 s      |
    | Vida de un vecino / de una ruta      | 3.5 x intervalo         |
    | Costo del enlace                     | 1 o 2      | 10         |
-   | Actualizacion disparada (min.)       | 2 s        | no         |
+   | Actualizacion disparada (min.)       | 2 s        | 60 s       |
    | TTL inicial del paquete              | 16                      |
    | Metrica inalcanzable                 | 32                      |
    | Vida de una entrada del directorio   | 1800 s                  |
@@ -785,9 +788,6 @@ RFC FARONET-1       FaroNet: Faro y red mesh anonima      Noviembre 2026
    | Espera aleatoria al reenviar celdas  | 0 a 0.5 s               |
    | Rotacion de la MAC del Faro          | cada 1800 s             |
    +--------------------------------------+-------------------------+
-
-
-
 
 
 

@@ -83,6 +83,7 @@ class Nodo:
         self._ultimas_rutas = {}
         self._rutas_cambiaron = False
         self._ultimo_disparo = 0.0
+        self._disparo_pendiente = set()     # interfaces de Faro con RUTAS disparadas en espera
         self._ultima_entrada = 0.0
         self.entrada_propia = None
         self.panico_activado = False
@@ -395,12 +396,21 @@ class Nodo:
                 if self.rutas.expirar():
                     self._rutas_cambiaron = True
                 if self._rutas_cambiaron and ahora - self._ultimo_disparo > 2:
-                    # actualización disparada (solo por UDP; el Faro espera su turno)
+                    # actualización disparada: por UDP de inmediato; por el Faro,
+                    # como máximo cada interfaz.disparo_min segundos
                     self._rutas_cambiaron = False
                     self._ultimo_disparo = ahora
                     for interfaz in self.interfaces:
-                        if not hasattr(interfaz, "faro"):
+                        if hasattr(interfaz, "faro"):
+                            self._disparo_pendiente.add(interfaz.nombre)
+                        else:
                             self._enviar_rutas(interfaz)
+                for interfaz in self.interfaces:
+                    if (interfaz.nombre in self._disparo_pendiente and ahora
+                            - self._ultimas_rutas.get(interfaz.nombre, 0) >= interfaz.disparo_min):
+                        self._disparo_pendiente.discard(interfaz.nombre)
+                        self._ultimas_rutas[interfaz.nombre] = ahora
+                        self._enviar_rutas(interfaz)
                 if self.rotar_mac_cada and ahora - self._ultima_rotacion > self.rotar_mac_cada:
                     self.rotar_mac()
                 if ahora - self._ultima_entrada > REPUBLICAR_CADA_S:
@@ -490,8 +500,8 @@ class Nodo:
                 e = dict(faro.estadisticas)
                 cola = getattr(faro, "_cola_salida", None)
                 e["en_cola_capa1"] = cola.qsize() if cola is not None else -1
-                e["pendientes_mesh"] = len([x for x in getattr(interfaz, "_pendientes", [])
-                                            if not x.listo.is_set()])
+                datos, control = interfaz.pendientes()      # la fila de la mesh, antes del Faro
+                e["fila_mesh_datos"], e["fila_mesh_control"] = datos, control
                 faros[interfaz.nombre] = e
             except Exception:
                 pass

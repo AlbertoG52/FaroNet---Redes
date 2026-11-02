@@ -9,6 +9,7 @@ y le entregan lo recibido con  nodo.recibir_crudo(datos, interfaz, direccion).
 `direccion` es (ip, puerto) en UDP y la MAC de 4 bytes del Faro en el Faro.
 Las direcciones viven solo en memoria: nunca se escriben a disco ni a bitácoras.
 """
+import collections
 import os
 import socket
 import struct
@@ -126,9 +127,17 @@ class InterfazFaro:
     Capa 1 (DispositivoLuzAdaptador o DispositivoLuzSimulado). Los paquetes
     viajan con el protocolo PROTO_FARONET (0x0002) de la trama v3.
 
-    El Faro va a unos 25 bytes/s: por eso los HELLO y las RUTAS se mandan
-    cada 90 s y, si ya hay muchos envíos esperando, se descartan los de
-    control (los de datos siempre se encolan).
+    El Faro va a unos 20-30 bytes/s, así que la luz se reparte con cuidado:
+      - Los HELLO y las RUTAS se mandan cada 300 s (por UDP, cada 5-10 s).
+        Una actualización disparada de RUTAS sale como máximo cada 60 s.
+      - Esta interfaz tiene su propia fila y le pasa al Faro UN envío a la
+        vez. Los paquetes de DATOS (celdas y publicaciones) salen antes que
+        los de control (HELLO, RUTAS, DIRECTORIO).
+      - Un paquete de control nuevo REEMPLAZA al que todavía espera en la fila
+        con el mismo tipo, destino e id (un HELLO nuevo al viejo, unas RUTAS
+        nuevas a las viejas, una entrada del directorio a la del mismo nodo),
+        así el control no se acumula. Si aun así hay MAX_CONTROL esperando,
+        los nuevos se descartan; los de datos siempre se encolan.
 
     Cifrado del enlace (opcional, recomendado): con `clave_enlace` (la misma
     frase en los dos Faros) cada paquete viaja dentro de un SecretBox de
@@ -138,10 +147,11 @@ class InterfazFaro:
     que no tenga la frase inyecte paquetes por la luz. Agrega 40 bytes por
     paquete (220 -> 260, 550 -> 590): todos siguen midiendo lo mismo."""
 
-    MAX_PENDIENTES = 12
+    MAX_CONTROL = 12
     SAL_ENLACE = b"faronet-enlace-1"          # 16 bytes, fija: la frase es el secreto
 
-    def __init__(self, faro, costo=10, intervalo_hello=90, intervalo_rutas=90, clave_enlace=None):
+    def __init__(self, faro, costo=10, intervalo_hello=300, intervalo_rutas=300,
+                 clave_enlace=None, disparo_min=60):
         from DispositivoLuzAdaptador import DIFUSION, PROTO_FARONET
         self._DIFUSION, self._PROTO = DIFUSION, PROTO_FARONET
         self._caja = None
@@ -159,9 +169,15 @@ class InterfazFaro:
         self.costo = costo
         self.intervalo_hello = intervalo_hello
         self.intervalo_rutas = intervalo_rutas
+        self.disparo_min = disparo_min        # s entre RUTAS disparadas por la luz
         self.nodo = None
-        self._pendientes = []
+        self._datos = collections.deque()     # (bytes, destino) en orden de llegada
+        self._control = collections.OrderedDict()   # clave -> (bytes, destino)
+        self._en_vuelo = None                 # el Envio que el Faro está mandando
         self._lock = threading.Lock()
+        self._hay_trabajo = threading.Event()
+        self._cerrada = False
+        self.estadisticas = {"control_reemplazados": 0, "control_descartados": 0}
 
     def __str__(self):
         return "faro (luz, enlace cifrado)" if self._caja else "faro (luz)"
@@ -175,6 +191,7 @@ class InterfazFaro:
         self.faro.al_recibir(self._PROTO, self._al_recibir)
         self.faro.al_cambiar_mac(lambda _vieja, _nueva: nodo.anunciar_en(self))
         self.faro.registrar_borrado(nodo.panico)
+        threading.Thread(target=self._despachador, daemon=True).start()
 
     def _al_recibir(self, mensaje):
         datos = mensaje.datos
@@ -187,23 +204,73 @@ class InterfazFaro:
                 return
         self.nodo.recibir_crudo(datos, self, bytes(mensaje.origen))
 
-    def ocupada(self):
+    @staticmethod
+    def _clave_control(datos, destino):
+        """Tipo + destino + el id que va al inicio del cuerpo (HELLO: el nodo que
+        saluda; RUTAS: el primer destino de la lista; DIRECTORIO: el nodo de la
+        entrada). Los tres cuerpos empiezan con 1 byte de versión y el id."""
+        return (datos[1], bytes(destino), bytes(datos[15:23]))
+
+    def pendientes(self):
         with self._lock:
-            self._pendientes = [e for e in self._pendientes if not e.listo.is_set()]
-            return len(self._pendientes) >= self.MAX_PENDIENTES
+            return len(self._datos), len(self._control)
 
     def _encolar(self, datos, destino, es_control):
-        if es_control and self.ocupada():
+        if self._cerrada:
             return None
-        if self._caja is not None:
-            datos = bytes(self._caja.encrypt(bytes(datos)))
-        try:
-            envio = self.faro.enviar(datos, destino, self._PROTO)
-        except Exception:
-            return None
+        datos = bytes(datos)
         with self._lock:
-            self._pendientes.append(envio)
-        return envio
+            if es_control:
+                clave = self._clave_control(datos, destino)
+                if clave in self._control:
+                    self._control[clave] = (datos, destino)     # mismo lugar, contenido nuevo
+                    self.estadisticas["control_reemplazados"] += 1
+                elif len(self._control) >= self.MAX_CONTROL:
+                    self.estadisticas["control_descartados"] += 1
+                    return None
+                else:
+                    self._control[clave] = (datos, destino)
+            else:
+                self._datos.append((datos, destino))
+        self._despachar()
+        return True
+
+    def _despachar(self):
+        """Si el Faro está libre, le pasa el siguiente envío: datos primero."""
+        with self._lock:
+            if self._cerrada:
+                return
+            if self._en_vuelo is not None and not self._en_vuelo.listo.is_set():
+                return
+            self._en_vuelo = None
+            if self._datos:
+                datos, destino = self._datos.popleft()
+            elif self._control:
+                _clave, (datos, destino) = self._control.popitem(last=False)
+            else:
+                return
+            if self._caja is not None:
+                datos = bytes(self._caja.encrypt(datos))
+            try:
+                self._en_vuelo = self.faro.enviar(datos, destino, self._PROTO)
+            except Exception:
+                self._en_vuelo = None
+        self._hay_trabajo.set()
+
+    def _despachador(self):
+        """Hilo: cuando el Faro termina un envío, le pasa el siguiente."""
+        while not self._cerrada:
+            self._hay_trabajo.wait(1.0)
+            self._hay_trabajo.clear()
+            while not self._cerrada:
+                with self._lock:
+                    envio = self._en_vuelo
+                    quedan = bool(self._datos or self._control)
+                if envio is not None and not envio.listo.wait(0.2):
+                    continue                    # el Faro sigue ocupado
+                if not quedan:
+                    break
+                self._despachar()
 
     def enviar(self, datos, direccion, es_control=False):
         return self._encolar(datos, bytes(direccion), es_control)
@@ -219,13 +286,22 @@ class InterfazFaro:
         """Pánico por software: lo mismo que el botón físico del Faro (borra la
         MAC, enciende el LED rojo). El Faro, a su vez, llama a nodo.panico(),
         que ya está en marcha y no hace nada más."""
+        self._vaciar()                    # lo que esperaba en la fila no sale
         try:
             self.faro.activar_panico()
         except Exception:
             pass
         self._caja = None
 
+    def _vaciar(self):
+        self._cerrada = True
+        with self._lock:
+            self._datos.clear()
+            self._control.clear()
+        self._hay_trabajo.set()
+
     def cerrar(self):
+        self._vaciar()
         try:
             self.faro.cerrar()
         except Exception:

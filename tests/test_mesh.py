@@ -388,3 +388,93 @@ class PruebasEnlaceFaro(unittest.TestCase):
         nodo.panico()
         self.assertTrue(faro.panico_activado)                # MAC borrada y LED rojo
         self.assertTrue(nodo.panico_activado)
+
+
+class FaroOcupado(FaroFalso):
+    """Como FaroFalso, pero cada envío queda "en el aire" hasta que la prueba
+    llama terminar(): así se ve qué le pasa la interfaz al Faro y en qué orden."""
+
+    def __init__(self):
+        super().__init__()
+        self.en_curso = []
+
+    def enviar(self, datos, destino, protocolo):
+        self.enviados.append(bytes(datos))
+        e = threading.Event()
+        self.en_curso.append(e)
+        return type("Envio", (), {"listo": e})()
+
+    def terminar(self):
+        for e in self.en_curso:
+            e.set()
+
+
+class PruebasFilaDelFaro(unittest.TestCase):
+    """La luz es lenta: datos antes que control y el control no se acumula."""
+
+    def armar(self):
+        from interfaces import InterfazFaro
+        faro = FaroOcupado()
+        interfaz = InterfazFaro(faro)
+        nodo = Nodo(Identidad(), [interfaz], alias="x")
+        interfaz.iniciar(nodo)
+        return faro, interfaz, nodo
+
+    def test_intervalos_por_la_luz(self):
+        from interfaces import InterfazFaro
+        interfaz = InterfazFaro(FaroFalso())
+        self.assertEqual((interfaz.intervalo_hello, interfaz.intervalo_rutas), (300, 300))
+        self.assertEqual(interfaz.disparo_min, 60)
+
+    def test_los_datos_pasan_antes_que_el_control(self):
+        faro, interfaz, nodo = self.armar()
+        destino = b"\x01\x02\x03\x04"
+        nodo.anunciar_en(interfaz)                              # sale de inmediato
+        self.assertEqual(len(faro.enviados), 1)
+        rutas = P.armar_rutas([(b"R" * 8, 1)])[0].a_bytes()
+        interfaz.enviar(rutas, destino, es_control=True)         # espera
+        dato = P.Paquete(P.TIPO_PUBLICACION, b"hola").a_bytes()
+        interfaz.enviar(dato, destino, es_control=False)         # llega después...
+        self.assertEqual(interfaz.pendientes(), (1, 1))
+        faro.terminar()
+        self.assertTrue(esperar(lambda: len(faro.enviados) >= 2, 5))
+        self.assertEqual(faro.enviados[1][1], P.TIPO_PUBLICACION)    # ...pero sale primero
+        faro.terminar()
+        self.assertTrue(esperar(lambda: len(faro.enviados) >= 3, 5))
+        self.assertEqual(faro.enviados[2][1], P.TIPO_RUTAS)
+        interfaz.cerrar()
+
+    def test_un_hello_nuevo_reemplaza_al_que_espera(self):
+        faro, interfaz, nodo = self.armar()
+        for _ in range(5):
+            nodo.anunciar_en(interfaz)          # 1 sale, los otros 4 son uno solo en la fila
+        self.assertEqual(interfaz.pendientes(), (0, 1))
+        self.assertEqual(interfaz.estadisticas["control_reemplazados"], 3)
+        faro.terminar()
+        self.assertTrue(esperar(lambda: interfaz.pendientes() == (0, 0), 5))
+        faro.terminar()
+        time.sleep(0.5)
+        self.assertEqual(len(faro.enviados), 2)
+        interfaz.cerrar()
+
+    def test_entradas_del_directorio_de_nodos_distintos_no_se_pisan(self):
+        faro, interfaz, nodo = self.armar()
+        destino = b"\x01\x02\x03\x04"
+        nodo.anunciar_en(interfaz)
+        entradas = [Identidad().crear_entrada(alias=f"n{i}") for i in range(3)]
+        for entrada in entradas + entradas[:1]:          # la primera, dos veces
+            interfaz.enviar(P.Paquete(P.TIPO_DIRECTORIO, entrada.a_bytes(), ttl=1).a_bytes(),
+                            destino, es_control=True)
+        self.assertEqual(interfaz.pendientes(), (0, 3))
+        interfaz.cerrar()
+
+    def test_el_panico_vacia_la_fila(self):
+        faro, interfaz, nodo = self.armar()
+        nodo.anunciar_en(interfaz)
+        dato = P.Paquete(P.TIPO_PUBLICACION, b"hola").a_bytes()
+        interfaz.enviar(dato, b"\x01\x02\x03\x04", es_control=False)
+        nodo.panico()
+        self.assertEqual(interfaz.pendientes(), (0, 0))
+        faro.terminar()
+        time.sleep(0.5)
+        self.assertEqual(len(faro.enviados), 1)          # lo que esperaba no salió
