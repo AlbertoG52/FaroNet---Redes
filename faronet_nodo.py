@@ -1,30 +1,30 @@
 #!/usr/bin/env python3
 """
-faronet_nodo.py - Arranca un nodo de FaroNet (mesh + aplicación anónima).
+faronet_nodo.py - Arranca un nodo de FaroNet: la mesh y la aplicación anónima.
 
-Todos los parámetros se reciben desde la terminal. Ejemplos:
+Todos los parámetros se reciben desde la terminal. Algunos ejemplos:
 
-  # Nodo común por WiFi/Ethernet (descubre solo a los vecinos de la red local):
+  # Nodo común por WiFi o Ethernet, que descubre solo a sus vecinos de la red local:
   python3 faronet_nodo.py --alias ana --puerto 7001 --api 7101
 
-  # Nodo con vecinos fijos (por ejemplo, otra computadora o una Pi por Tailscale):
+  # Nodo con vecinos fijos, por ejemplo otra computadora o una Pi por Tailscale:
   python3 faronet_nodo.py --alias beto --puerto 7000 --vecino 100.64.0.5:7000
 
-  # Nodo puerta de enlace de una comunidad, con el Faro REAL (en la Raspberry Pi):
+  # Nodo que une a una comunidad con la otra por el Faro real (en la Raspberry Pi):
   sudo pigpiod
   python3 faronet_nodo.py --alias faroA --faro real --pausa 40
 
-  # Nodo GATEWAY (Pi B): además envía los temas públicos al Worker de Cloudflare
+  # Nodo gateway (Pi B), que además envía los temas públicos al Worker de Cloudflare:
   python3 faronet_nodo.py --alias faroB --faro real --pausa 40 --worker https://faronet.xxx.workers.dev
-  python3 faronet_nodo.py --alias faroB --llave-gateway     # la llave para wrangler.toml
+  python3 faronet_nodo.py --alias faroB --llave-gateway     # muestra la llave para wrangler.toml
 
-  # Lo mismo pero con el Faro SIMULADO (en la laptop, sin Raspberry Pi):
+  # Lo mismo, pero con el Faro simulado (en una computadora, sin Raspberry Pi):
   python3 faronet_nodo.py --alias faroA --faro simulado --velocidad 25
 
-  # Varias comunidades en una sola computadora (sin descubrimiento, vecinos fijos):
+  # Varias comunidades en una sola computadora, sin descubrimiento y con vecinos fijos:
   python3 faronet_nodo.py --alias n1 --puerto 7001 --api 7101 --sin-descubrir --vecino 127.0.0.1:7002
 
-Luego, en otra terminal, se usa el chat:  python3 App/chat.py --api 7101 ...
+Después, en otra terminal, se usa el chat:  python3 App/chat.py --api 7101 ...
 """
 import argparse
 import os
@@ -48,7 +48,7 @@ from nodo import Nodo                          # noqa: E402
 from servicio import ServicioChat              # noqa: E402
 
 
-CODIGO_PANICO = 3      # código de salida del proceso cuando terminó por el pánico
+CODIGO_PANICO = 3      # código con el que termina el proceso después de un pánico
 
 
 def crear_faro(a):
@@ -204,7 +204,7 @@ def main():
         print("PÁNICO: llaves y datos borrados. Nodo detenido.", flush=True)
     nodo.detener()
     if nodo.panico_activado:
-        sys.exit(CODIGO_PANICO)       # pi_comunidad.py lo usa para borrar también los otros nodos
+        sys.exit(CODIGO_PANICO)       # pi_comunidad.py lo usa para borrar también los otros nodos de la Pi
 
 
 if __name__ == "__main__":

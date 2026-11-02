@@ -1,6 +1,7 @@
 /**
- * runtime.ts - Simulación en memoria del runtime de Cloudflare (Durable Objects:
- * almacenamiento, alarmas, WebSockets) para probar el Worker sin Cloudflare.
+ * runtime.ts - Simula en memoria el runtime de Cloudflare (el almacenamiento,
+ * las alarmas y los WebSockets de los Durable Objects) para probar el Worker
+ * sin Cloudflare.
  */
 // ------------------------------------------------------------ simulación del runtime
 export class Almacen {

@@ -2,17 +2,19 @@
 """
 buzon_muerto.py - Cliente del buzón muerto (dead drop) del Worker de FaroNet.
 
-Dos personas acuerdan EN PERSONA una frase secreta. Con ella:
-    - se deriva el identificador del buzón (64 hex), opaco para el Worker;
-    - se deriva la clave con la que se cifra el mensaje (SecretBox de PyNaCl).
-El blob siempre mide 1024 bytes (el mensaje se rellena) y se borra al leerlo.
+Dos personas acuerdan en persona una frase secreta. De ella se derivan:
+    - el identificador del buzón (64 caracteres hexadecimales), que para el
+      Worker no significa nada;
+    - la clave con la que se cifra el mensaje (un SecretBox de PyNaCl).
+El blob siempre mide 1024 bytes, porque el mensaje se rellena, y se borra en
+cuanto alguien lo lee.
 
     python3 Gateway/buzon_muerto.py --worker https://faronet.xxx.workers.dev \\
         depositar --frase "frase larga acordada en persona" --mensaje "nos vemos el martes"
     python3 Gateway/buzon_muerto.py --worker https://faronet.xxx.workers.dev \\
         recoger --frase "frase larga acordada en persona"
 
-El Worker nunca ve el mensaje en claro, ni la frase, ni quién depositó.
+El Worker nunca ve el mensaje en claro ni la frase, ni sabe quién lo depositó.
 """
 import argparse
 import struct
@@ -30,12 +32,13 @@ except ImportError:
     sys.exit("Falta PyNaCl: pip install pynacl  (Raspberry Pi: sudo apt install python3-nacl)")
 
 TAM_BLOB = 1024
-SOBRECOSTO = 24 + 16                       # nonce + MAC del SecretBox
+SOBRECOSTO = 24 + 16                       # nonce y MAC del SecretBox
 MAX_MENSAJE = TAM_BLOB - SOBRECOSTO - 2    # 982 bytes
 
 
 def derivar(frase):
-    """Una sola derivación Argon2id de 64 bytes: 32 para el id, 32 para la clave."""
+    """Hace una sola derivación Argon2id de 64 bytes: los primeros 32 son el
+    id del buzón y los otros 32 la clave."""
     sal = nacl.hash.blake2b(b"faronet-buzon-muerto", digest_size=16, encoder=nacl.encoding.RawEncoder)
     material = nacl.pwhash.argon2id.kdf(64, frase.encode("utf-8"), sal,
                                         opslimit=nacl.pwhash.argon2id.OPSLIMIT_INTERACTIVE,
@@ -48,7 +51,7 @@ def armar_blob(clave, mensaje):
     if len(datos) > MAX_MENSAJE:
         raise ValueError(f"mensaje demasiado largo ({len(datos)} > {MAX_MENSAJE} bytes)")
     claro = struct.pack(">H", len(datos)) + datos
-    claro += bytes(TAM_BLOB - SOBRECOSTO - len(claro))           # relleno a tamaño fijo
+    claro += bytes(TAM_BLOB - SOBRECOSTO - len(claro))           # se rellena hasta el tamaño fijo
     blob = bytes(nacl.secret.SecretBox(clave).encrypt(claro))
     assert len(blob) == TAM_BLOB
     return blob

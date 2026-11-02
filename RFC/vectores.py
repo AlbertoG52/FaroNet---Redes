@@ -1,9 +1,9 @@
 """
-vectores.py - Vectores de prueba del RFC, calculados con el código REAL del
-proyecto. Los usan formatear_rfc.py (para escribirlos en el RFC) y
-verificar_rfc.py (para comprobar que el RFC sigue coincidiendo con el código).
+vectores.py - Vectores de prueba del RFC, calculados con el código real del
+proyecto. formatear_rfc.py los usa para escribirlos en el RFC, y
+verificar_rfc.py para comprobar que el RFC sigue coincidiendo con el código.
 
-Todo es determinístico: semillas, horas y nonces fijos.
+Todo es determinístico: las semillas, las horas y los nonces son fijos.
 """
 import os
 import sys
@@ -14,7 +14,7 @@ for carpeta in ("Trama", "Faro", "Mesh", "App", "Gateway"):
 
 
 def _hex(datos, ancho=16, sangria=6):
-    """Bytes en hexadecimal, 16 por línea, con desplazamiento."""
+    """Muestra bytes en hexadecimal, 16 por línea y con su desplazamiento."""
     lineas = []
     for i in range(0, len(datos), ancho):
         trozo = " ".join(f"{b:02x}" for b in datos[i:i + ancho])
@@ -70,7 +70,7 @@ def _identidad_fija():
     from identidad import Identidad
     ident = Identidad.__new__(Identidad)
     ident.archivo = None
-    ident._cargar(bytes(range(1, 33)))          # semilla 01 02 ... 20
+    ident._cargar(bytes(range(1, 33)))          # la semilla es 01 02 ... 20
     return ident
 
 

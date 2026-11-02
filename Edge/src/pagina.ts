@@ -1,7 +1,7 @@
 /**
- * pagina.ts - Páginas HTML que ve el navegador: inicio y sala en tiempo real.
- * Todo el contenido de los usuarios se inserta con textContent (nunca como
- * HTML), y una Content-Security-Policy con nonce bloquea cualquier otro script.
+ * pagina.ts - Páginas HTML que ve el navegador: el inicio y la sala en tiempo real.
+ * Todo el contenido de los usuarios se inserta con textContent, nunca como
+ * HTML, y una Content-Security-Policy con nonce bloquea cualquier otro script.
  */
 import { CABECERAS_SEGURAS, escaparXml } from "./comun.ts";
 

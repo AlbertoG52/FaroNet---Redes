@@ -719,6 +719,7 @@ Apéndice B.  Decisiones de diseño
    Escuela de Ingeniería en Computación
    Instituto Tecnológico de Costa Rica
    Alajuela, Costa Rica
+   Correo: aguerrero@estudiantec.cr
 
    Christopher Alvarado Aguilar
    Escuela de Ingeniería en Computación

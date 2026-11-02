@@ -1,14 +1,16 @@
 """
 identidad.py - Llaves del nodo y entradas firmadas del directorio de nodos.
 
-Cada nodo tiene UNA semilla secreta de 32 bytes, de la que salen:
-    - una llave Ed25519 para FIRMAR (su entrada del directorio, sus mensajes);
-    - una llave X25519 para CIFRAR (cebolla y mensajes privados), derivada de
-      la Ed25519 con la conversión estándar de libsodium.
+Cada nodo tiene una sola semilla secreta de 32 bytes, de la que salen:
+    - una llave Ed25519, con la que firma su entrada del directorio y sus
+      mensajes;
+    - una llave X25519, con la que se le cifran las capas de la cebolla y los
+      mensajes privados. Se deriva de la Ed25519 con la conversión estándar
+      de libsodium.
 
-El identificador del nodo (8 bytes) es BLAKE2b(llave pública Ed25519)[:8],
-así que nadie puede publicar una entrada con el identificador de otro: el
-identificador queda atado a la llave que firma.
+El identificador del nodo (8 bytes) es BLAKE2b(llave pública Ed25519)[:8].
+Como queda atado a la llave que firma, nadie puede publicar una entrada con
+el identificador de otro nodo.
 
 Entrada del directorio (versión 1):
 
@@ -16,11 +18,13 @@ Entrada del directorio (versión 1):
     | Ver | Id (8) | Ed25519 (32)| Creada | Expira | Flags | Long.alias| Alias | Firma  |
     | 1 B |        |             |  4 B   |  4 B   |  1 B  |    1 B    | 0..16 | 64 B   |
     +-----+--------+-------------+--------+--------+-------+-----------+-------+--------+
-    La firma Ed25519 cubre todo lo anterior. Creada/Expira: segundos Unix.
-    Flags: bit 0 = el nodo es gateway hacia el edge.
+    La firma Ed25519 cubre todos los campos anteriores. Creada y Expira van
+    en segundos Unix. En Flags, el bit 0 indica que el nodo es el gateway
+    hacia el edge.
 
-Criptografía: solo PyNaCl (libsodium). Instalar en la Raspberry Pi con
-    sudo apt install python3-nacl        (en Windows/Mac: pip install pynacl)
+Toda la criptografía viene de PyNaCl (libsodium). En la Raspberry Pi se
+instala con `sudo apt install python3-nacl`, y en Windows o Mac con
+`pip install pynacl`.
 """
 import os
 import struct
@@ -37,7 +41,7 @@ VERSION_ENTRADA = 1
 TAM_ID = 8
 MAX_ALIAS = 16
 FLAG_GATEWAY = 0x01
-VIDA_ENTRADA_S = 30 * 60          # una entrada vale 30 minutos; se republica antes
+VIDA_ENTRADA_S = 30 * 60          # una entrada vale 30 minutos y el nodo la renueva antes
 
 _ENTRADA = struct.Struct(">B8s32sIIBB")
 
@@ -56,8 +60,9 @@ def id_a_texto(id_nodo: bytes) -> str:
 
 
 class Identidad:
-    """Llaves de este nodo. Con `archivo` se guardan (permisos 600) para que
-    el nodo conserve su identidad entre reinicios; sin archivo son efímeras."""
+    """Las llaves de este nodo. Si se indica `archivo`, la semilla se guarda
+    ahí con permisos 600 y el nodo conserva su identidad entre reinicios; si
+    no, las llaves son efímeras y desaparecen al cerrar el programa."""
 
     def __init__(self, archivo=None):
         self.archivo = archivo
@@ -76,7 +81,7 @@ class Identidad:
     def _cargar(self, semilla):
         self.firma = nacl.signing.SigningKey(semilla)
         self.verificacion = self.firma.verify_key
-        self.privada = self.firma.to_curve25519_private_key()      # X25519
+        self.privada = self.firma.to_curve25519_private_key()      # la llave X25519 sale de la Ed25519
         self.publica = self.privada.public_key
         self.id = id_de_llave(bytes(self.verificacion))
 
@@ -93,8 +98,9 @@ class Identidad:
         os.replace(temporal, self.archivo)
 
     def borrar(self):
-        """Pánico: sobrescribe el archivo de llaves y suelta las referencias.
-        (Python no permite garantizar que no queden copias en memoria.)"""
+        """Se usa en el pánico: sobrescribe el archivo de la semilla, lo borra
+        y suelta las referencias a las llaves. Python no permite garantizar
+        que no queden copias en memoria, pero así no queda nada en disco."""
         if self.archivo and os.path.exists(self.archivo):
             try:
                 with open(self.archivo, "r+b") as f:
@@ -118,7 +124,7 @@ class Identidad:
 @dataclass
 class Entrada:
     id: bytes
-    llave_firma: bytes          # Ed25519 pública (32 B)
+    llave_firma: bytes          # llave pública Ed25519 (32 B)
     creada: int
     expira: int
     flags: int = 0
@@ -143,16 +149,17 @@ class Entrada:
 
     @property
     def llave_cifrado(self):
-        """Llave pública X25519 del nodo, derivada de su llave de firma."""
+        """La llave pública X25519 del nodo, que se deriva de su llave de firma."""
         return nacl.signing.VerifyKey(self.llave_firma).to_curve25519_public_key()
 
     def vigente(self, ahora=None):
         ahora = time.time() if ahora is None else ahora
-        return self.creada - 300 <= ahora < self.expira      # 5 min de tolerancia de reloj
+        return self.creada - 300 <= ahora < self.expira      # se toleran relojes adelantados hasta 5 min
 
     @classmethod
     def desde_bytes(cls, crudo):
-        """Lee y VERIFICA una entrada: firma válida e id que corresponde a la llave."""
+        """Lee una entrada y la verifica: la firma debe ser válida y el id debe
+        corresponder a la llave."""
         if len(crudo) < _ENTRADA.size + 64:
             raise ErrorEntrada("entrada corta")
         version, id_nodo, llave, creada, expira, flags, largo = _ENTRADA.unpack(crudo[:_ENTRADA.size])

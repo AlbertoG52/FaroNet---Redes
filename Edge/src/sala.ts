@@ -1,12 +1,12 @@
 /**
  * sala.ts - Durable Object "Sala": una por cada tema público.
  *
- * Guarda las publicaciones del tema (solo hasta que vence su TTL) y las
+ * La sala guarda las publicaciones del tema hasta que vence su TTL y las
  * reparte en tiempo real a los navegadores conectados por WebSocket. También
  * genera el feed Atom del tema.
  *
- * Usa la API de WebSockets con hibernación de Durable Objects: el objeto
- * puede "dormirse" con las conexiones abiertas, sin gastar tiempo de CPU.
+ * Usa la API de WebSockets con hibernación de los Durable Objects, así que el
+ * objeto puede "dormirse" con las conexiones abiertas sin gastar CPU.
  */
 import { CABECERAS_SEGURAS, MAX_PUBLICACIONES_POR_SALA, error, escaparXml, json } from "./comun.ts";
 
@@ -41,7 +41,7 @@ export class Sala {
     const clave = `p:${String(p.creada).padStart(10, "0")}:${p.id}`;
     if (await this.state.storage.get(clave)) return json({ ok: true, duplicada: true });
     await this.state.storage.put(clave, p);
-    // límite de publicaciones guardadas: se borran las más viejas
+    // Si se pasa del límite de publicaciones guardadas, se borran las más viejas.
     const claves = [...(await this.state.storage.list({ prefix: "p:" })).keys()];
     if (claves.length > MAX_PUBLICACIONES_POR_SALA) {
       await this.state.storage.delete(claves.slice(0, claves.length - MAX_PUBLICACIONES_POR_SALA));
@@ -62,7 +62,7 @@ export class Sala {
     if (actual === null || actual > proxima) await this.state.storage.setAlarm(proxima);
   }
 
-  /** Alarma: borra lo vencido (TTL) y programa la siguiente limpieza. */
+  /** La alarma borra lo que ya venció y programa la siguiente limpieza. */
   async alarm(): Promise<void> {
     const ahora = Date.now() / 1000;
     const todas = await this.state.storage.list({ prefix: "p:" });
@@ -81,7 +81,7 @@ export class Sala {
     return new Response(null, { status: 101, webSocket: cliente } as any);
   }
 
-  // Las salas son de solo lectura: lo que mande el navegador se ignora.
+  // Las salas son de solo lectura, así que lo que envíe el navegador se ignora.
   async webSocketMessage(_ws: any, _mensaje: any): Promise<void> {}
 
   async webSocketClose(ws: any, codigo: number): Promise<void> {

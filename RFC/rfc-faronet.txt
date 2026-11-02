@@ -1545,13 +1545,13 @@ Direcciones de los autores
    Escuela de Ingenieria en Computacion
    Instituto Tecnologico de Costa Rica
    Alajuela, Costa Rica
+   Correo: aguerrero@estudiantec.cr
 
    Christopher Alvarado Aguilar
    Escuela de Ingenieria en Computacion
    Instituto Tecnologico de Costa Rica
    Alajuela, Costa Rica
    Correo: chalvarado@estudiantec.cr
-
 
 
 

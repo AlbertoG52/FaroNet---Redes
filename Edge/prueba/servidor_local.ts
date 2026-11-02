@@ -1,8 +1,8 @@
 /**
  * servidor_local.ts - Corre el Worker de FaroNet en http://127.0.0.1:8787 usando
  * la simulación en memoria (sin Cloudflare). Sirve para probar el gateway de
- * Python de punta a punta. (Los WebSockets de las salas no se simulan aquí;
- * para eso use `npx wrangler dev`.)
+ * Python de punta a punta. Los WebSockets de las salas no se simulan aquí;
+ * para probarlos se usa `npx wrangler dev`.
  *
  *     node prueba/servidor_local.ts <GATEWAY_LLAVE en hex> [puerto]
  */

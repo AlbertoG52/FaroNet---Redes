@@ -1,23 +1,23 @@
 """
 nodo.py - Un nodo de la mesh FaroNet (capas 2 y 3).
 
-Qué hace un nodo:
-    - Descubre vecinos con HELLO en cada interfaz (UDP y/o Faro).
-    - Mantiene la tabla de rutas por vector de distancias.
+Un nodo se encarga de lo siguiente:
+    - Descubre a sus vecinos con HELLO en cada interfaz (UDP, Faro o ambas).
+    - Mantiene la tabla de rutas con el vector de distancias.
     - Publica su entrada firmada en el directorio y propaga las de los demás.
-    - Reenvía celdas cebolla hacia su destino y quita la capa que le toca
-      cuando la celda es para él.
-    - Inunda las publicaciones de los temas (con detección de duplicados).
-    - Entrega a la Capa 7 (App/servicio.py) lo que es para la aplicación.
+    - Reenvía las celdas de la cebolla hacia su destino y, cuando una celda es
+      para él, quita la capa que le corresponde.
+    - Inunda las publicaciones de los temas y descarta las repetidas.
+    - Le entrega a la Capa 7 (App/servicio.py) lo que es para la aplicación.
 
-Privacidad:
-    - Los paquetes no llevan campo de origen y tienen tamaño fijo.
-    - Al reenviar una celda se espera un tiempo aleatorio (0..retardo_max s)
-      para dificultar la correlación por tiempos.
-    - No se escriben bitácoras: con --depurar solo se imprimen tipos y
+En cuanto a la privacidad:
+    - Los paquetes no llevan campo de origen y siempre miden lo mismo.
+    - Antes de reenviar una celda, el nodo espera un tiempo aleatorio (entre 0
+      y retardo_max segundos) para dificultar la correlación por tiempos.
+    - No se escriben bitácoras. Con --depurar solo se imprimen tipos y
       cantidades, nunca direcciones IP, MACs ni identificadores.
-    - Pánico: borra llaves, directorio, rutas, vecinos y todo lo de la
-      aplicación, y detiene el nodo.
+    - El pánico borra las llaves, el directorio, las rutas, los vecinos y todo
+      lo de la aplicación, y detiene el nodo.
 """
 import random
 import threading
@@ -33,12 +33,12 @@ from directorio import Directorio
 from enrutamiento import INFINITO, TablaRutas
 from identidad import ErrorEntrada, Entrada, VIDA_ENTRADA_S
 
-REPUBLICAR_CADA_S = VIDA_ENTRADA_S // 3     # la entrada propia se renueva cada 10 min
-RECORDAR_VISTOS_S = 2 * 3600                 # memoria de publicaciones ya vistas
+REPUBLICAR_CADA_S = VIDA_ENTRADA_S // 3     # el nodo renueva su propia entrada cada 10 min
+RECORDAR_VISTOS_S = 2 * 3600                 # cuánto tiempo se recuerdan las publicaciones ya vistas
 
 
 class ErrorRuta(Exception):
-    """No hay suficientes nodos o rutas para armar el circuito."""
+    """No hay suficientes nodos o rutas para armar el camino de la cebolla."""
 
 
 @dataclass
@@ -52,7 +52,7 @@ class Enlace:
 @dataclass
 class Vecino:
     id: bytes
-    enlaces: dict = field(default_factory=dict)      # nombre interfaz -> Enlace
+    enlaces: dict = field(default_factory=dict)      # nombre de la interfaz -> Enlace
 
     def mejor(self, ahora):
         vivos = [e for e in self.enlaces.values() if ahora - e.visto <= e.vida]
@@ -69,29 +69,29 @@ class Nodo:
         self.interfaces = list(interfaces)
         self.retardo_max = retardo_max
         self.depurar = depurar
-        self.rotar_mac_cada = rotar_mac_cada      # s; 0 = no rotar la MAC del Faro sola
+        self.rotar_mac_cada = rotar_mac_cada      # segundos; con 0 la MAC del Faro no rota sola
         self._ultima_rotacion = time.time()
 
         self.directorio = Directorio()
         self.rutas = TablaRutas(self.id)
-        self.vecinos = {}                       # id -> Vecino
-        self._por_direccion = {}                # (interfaz, direccion) -> id vecino
-        self._vistos = {}                       # huella de publicación -> hora
+        self.vecinos = {}                       # id del vecino -> Vecino
+        self._por_direccion = {}                # (interfaz, dirección) -> id del vecino
+        self._vistos = {}                       # huella de una publicación -> hora en que se vio
         self._lock = threading.RLock()
         self._activo = True
         self._ultimo_hello = {}
         self._ultimas_rutas = {}
         self._rutas_cambiaron = False
         self._ultimo_disparo = 0.0
-        self._disparo_pendiente = set()     # interfaces de Faro con RUTAS disparadas en espera
+        self._disparo_pendiente = set()     # interfaces de Faro con unas RUTAS disparadas por enviar
         self._ultima_entrada = 0.0
         self.entrada_propia = None
         self.panico_activado = False
 
-        # Capa 7: funciones que pone App/servicio.py
-        self.al_privado = None                  # f(mensaje_316B)
-        self.al_publicacion = None              # f(publicacion_365B) -> bool (válida)
-        self.al_panico = []                     # funciones extra de borrado
+        # Funciones de la Capa 7, que registra App/servicio.py
+        self.al_privado = None                  # recibe el mensaje de 316 B
+        self.al_publicacion = None              # recibe la publicación de 365 B y dice si es válida
+        self.al_panico = []                     # otras funciones de borrado para el pánico
 
         self.estadisticas = dict.fromkeys(
             ("paquetes_rx", "paquetes_tx", "descartados", "celdas_reenviadas",
@@ -151,7 +151,8 @@ class Nodo:
                     for e in v.enlaces.values() if e.interfaz is interfaz]
 
     def anunciar_en(self, interfaz):
-        """HELLO por una interfaz (también se llama al rotar la MAC del Faro)."""
+        """Envía un HELLO por una interfaz. También se usa después de rotar la
+        MAC del Faro."""
         if not self._activo:
             return
         hello = P.armar_hello(self.id, interfaz.intervalo_hello).a_bytes()
@@ -175,12 +176,12 @@ class Nodo:
             with self._lock:
                 origen = self._por_direccion.get((interfaz.nombre, direccion))
             if origen is None:
-                # todavía no sabemos quién es: pedirle que se presente
+                # Todavía no se sabe quién es, así que se le pide que se presente.
                 self.estadisticas["descartados"] += 1
                 hello = P.armar_hello(self.id, interfaz.intervalo_hello)
                 self._enviar(interfaz, direccion, hello)
                 return
-            with self._lock:                        # cualquier paquete renueva el enlace
+            with self._lock:                        # cualquier paquete mantiene vivo el enlace
                 enlace = self.vecinos[origen].enlaces.get(interfaz.nombre)
                 if enlace:
                     enlace.visto = time.time()
@@ -194,14 +195,14 @@ class Nodo:
                 self._recibir_publicacion(paq.cuerpo, origen, paq.ttl)
         except P.ErrorPaquete:
             self.estadisticas["descartados"] += 1
-        except Exception as e:                          # un paquete malo no tumba el nodo
+        except Exception as e:                          # un paquete defectuoso no debe detener el nodo
             self.estadisticas["descartados"] += 1
             self._log(f"error procesando {paq.nombre}: {type(e).__name__}")
 
     def _recibir_hello(self, paq, interfaz, direccion):
         id_vecino, intervalo = P.leer_hello(paq.cuerpo)
         if id_vecino == self.id:
-            return                                      # nuestro propio HELLO
+            return                                      # es el HELLO del propio nodo
         ahora = time.time()
         vida = 3.5 * max(intervalo, 1)
         with self._lock:
@@ -217,7 +218,7 @@ class Nodo:
             self._rutas_cambiaron = True
         if nuevo_enlace:
             self._log(f"vecino nuevo por {interfaz.nombre} (vecinos: {len(self.vecinos)})")
-            # presentarse, contarle las rutas y pasarle el directorio
+            # El nodo se presenta, le cuenta sus rutas y le pasa el directorio.
             self._enviar(interfaz, direccion, P.armar_hello(self.id, interfaz.intervalo_hello))
             self._enviar_rutas_a(id_vecino, interfaz, direccion)
             entradas = [self.entrada_propia] + self.directorio.vigentes()
@@ -231,7 +232,7 @@ class Nodo:
             enlace = self.vecinos[origen].enlaces.get(interfaz.nombre)
             mejor = self.vecinos[origen].mejor(time.time())
         if enlace is None or mejor is None or mejor.interfaz is not interfaz:
-            return              # solo se usan las rutas que llegan por el mejor enlace
+            return              # solo cuentan las rutas que llegan por el mejor enlace
         vida = 3.5 * interfaz.intervalo_rutas
         if self.rutas.recibir_anuncio(origen, interfaz.costo, lista, vida):
             self._rutas_cambiaron = True
@@ -315,15 +316,16 @@ class Nodo:
             raise ErrorRuta(f"se necesitan al menos {cebolla.SALTOS} nodos intermedios alcanzables "
                             f"(hay {len(candidatos)}); espere a que se llene el directorio")
         elegidos = random.sample(candidatos, cebolla.SALTOS)
-        # Se recorren de los más cercanos a los más lejanos: así la celda cruza
-        # la luz (el enlace más caro y lento) las menos veces posibles. Los
-        # nodos se eligen al azar; solo cambia el orden en que se visitan.
+        # Los nodos se eligen al azar, pero se visitan del más cercano al más
+        # lejano. Así la celda cruza la luz, que es el enlace más caro y lento,
+        # la menor cantidad de veces posible.
         metrica = {r.destino: r.metrica for r in self.rutas.listar()}
         elegidos.sort(key=lambda e: metrica.get(e.id, 0))
         return [(e.id, e.llave_cifrado) for e in elegidos]
 
     def enviar_privado(self, id_destino, mensaje_app):
-        """Envía 316 bytes de la aplicación al nodo destino por 3 saltos."""
+        """Envía los 316 bytes de un mensaje privado al nodo destino, pasando
+        por 3 nodos intermedios."""
         destino = self.directorio.obtener(id_destino)
         if destino is None:
             raise ErrorRuta("el destino no está en el directorio")
@@ -335,7 +337,8 @@ class Nodo:
         return [r[0] for r in ruta]
 
     def publicar(self, publicacion):
-        """Publica en un tema: la publicación sale por 3 saltos y la inunda R3."""
+        """Publica en un tema. La publicación pasa por 3 nodos intermedios y el
+        último (R3) la inunda en la mesh."""
         ruta = self._elegir_ruta({self.id})
         primero, celda = cebolla.armar_publicacion(ruta, publicacion)
         self._reenviar_celda(primero, celda, P.TTL_INICIAL)
@@ -396,8 +399,8 @@ class Nodo:
                 if self.rutas.expirar():
                     self._rutas_cambiaron = True
                 if self._rutas_cambiaron and ahora - self._ultimo_disparo > 2:
-                    # actualización disparada: por UDP de inmediato; por el Faro,
-                    # como máximo cada interfaz.disparo_min segundos
+                    # Actualización disparada: por UDP sale de inmediato y por el
+                    # Faro, como mucho, una vez cada interfaz.disparo_min segundos.
                     self._rutas_cambiaron = False
                     self._ultimo_disparo = ahora
                     for interfaz in self.interfaces:
@@ -423,9 +426,10 @@ class Nodo:
                 self._log(f"error en mantenimiento: {type(e).__name__}: {e}")
 
     def rotar_mac(self):
-        """Cambia la MAC de cada Faro (privacidad de la Capa 1). El Faro la
-        anuncia y el nodo manda un HELLO para que el vecino la asocie al mismo
-        nodo. El directorio no guarda MACs, así que no hay que actualizarlo."""
+        """Cambia la MAC de cada Faro, para que no se pueda seguir al
+        dispositivo en el tiempo. El Faro anuncia la MAC nueva y el nodo envía
+        un HELLO para que el vecino la asocie con el mismo nodo. Como el
+        directorio no guarda MACs, no hace falta actualizarlo."""
         self._ultima_rotacion = time.time()
         nuevas = []
         for interfaz in self.interfaces:
@@ -438,13 +442,13 @@ class Nodo:
 
     # ------------------------------------------------------------ pánico
     def panico(self):
-        """Borra llaves y todo el estado, y detiene el nodo."""
+        """Borra las llaves y todo el estado, y detiene el nodo."""
         if self.panico_activado:
             return
         self.panico_activado = True
         self._activo = False
-        # Primero lo de este nodo; las funciones registradas van al final porque
-        # una de ellas puede terminar el programa.
+        # Primero se borra lo de este nodo. Las funciones registradas se llaman
+        # al final porque una de ellas puede terminar el programa.
         self.identidad.borrar()
         self.directorio.borrar_todo()
         self.rutas.borrar_todo()
@@ -492,7 +496,7 @@ class Nodo:
 
     def info(self):
         faros = {}
-        for interfaz in self.interfaces:            # lo que pasa DENTRO de la luz (Capa 1)
+        for interfaz in self.interfaces:            # lo que pasa dentro de la luz (Capa 1)
             faro = getattr(interfaz, "faro", None)
             if faro is None:
                 continue
@@ -500,7 +504,7 @@ class Nodo:
                 e = dict(faro.estadisticas)
                 cola = getattr(faro, "_cola_salida", None)
                 e["en_cola_capa1"] = cola.qsize() if cola is not None else -1
-                datos, control = interfaz.pendientes()      # la fila de la mesh, antes del Faro
+                datos, control = interfaz.pendientes()      # la fila de la mesh, antes de llegar al Faro
                 e["fila_mesh_datos"], e["fila_mesh_control"] = datos, control
                 faros[interfaz.nombre] = e
             except Exception:

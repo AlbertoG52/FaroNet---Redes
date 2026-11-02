@@ -1,19 +1,20 @@
 """
 servicio.py - La aplicación anónima de FaroNet (Capa 7) que corre en cada nodo.
 
-Guarda EN MEMORIA (nunca en disco) y solo durante su TTL:
+El servicio guarda en memoria, nunca en disco, y solo mientras dura su TTL:
     - el buzón de mensajes privados recibidos;
-    - las publicaciones de los temas (públicas y privadas);
-    - las claves de los temas privados a los que este nodo se unió.
+    - las publicaciones de los temas, públicos y privados;
+    - las claves de los temas privados a los que el nodo se unió.
 
-Y atiende al cliente de terminal (App/chat.py) por una API local: un socket
-TCP en 127.0.0.1 (no se puede usar desde otra computadora) que recibe una
-línea JSON por pedido y responde una línea JSON.
+Además atiende al cliente de terminal (App/chat.py) por una API local: un
+socket TCP en 127.0.0.1, que no se puede usar desde otra computadora, donde
+cada pedido es una línea JSON y cada respuesta también.
 
     {"cmd": "privado", "para": "ana", "texto": "hola"}  ->  {"ok": true, ...}
 
-El pedido {"cmd": "escuchar"} deja la conexión abierta y el nodo va mandando
-los mensajes nuevos a medida que llegan (lo usa el modo interactivo).
+Con el pedido {"cmd": "escuchar"} la conexión queda abierta y el nodo va
+enviando los mensajes nuevos a medida que llegan; así funciona el modo
+interactivo del chat.
 """
 import json
 import os
@@ -38,14 +39,14 @@ TOLERANCIA_RELOJ_S = 300
 class ServicioChat:
     def __init__(self, nodo):
         self.nodo = nodo
-        self.buzon = []                     # dicts de mensajes privados
-        self._privados_vistos = {}          # id del mensaje -> vence (contra repeticiones)
-        self.publicaciones = {}             # id_msg -> Publicacion
-        self.temas_privados = {}            # etiqueta -> (nombre, clave)
-        self._claves = {}                   # (nombre, frase) -> clave (evita repetir Argon2)
-        self._oyentes = []                  # colas de las conexiones "escuchar"
+        self.buzon = []                     # mensajes privados recibidos (diccionarios)
+        self._privados_vistos = {}          # id del mensaje -> cuándo vence (contra repeticiones)
+        self.publicaciones = {}             # id del mensaje -> Publicacion
+        self.temas_privados = {}            # etiqueta del tema -> (nombre, clave)
+        self._claves = {}                   # (nombre, frase) -> clave, para no repetir Argon2id
+        self._oyentes = []                  # una cola por cada conexión "escuchar"
         self._lock = threading.RLock()
-        self.al_publicacion_publica = []    # funciones f(dict) (las usa el gateway)
+        self.al_publicacion_publica = []    # funciones que reciben cada publicación pública (el gateway)
         nodo.al_privado = self._al_privado
         nodo.al_publicacion = self._al_publicacion
         nodo.al_panico.append(self.borrar)
@@ -68,8 +69,8 @@ class ServicioChat:
             return
         ahora = time.time()
         # Protección contra repetición (replay): un nodo malicioso podría grabar
-        # una celda y reenviarla; el mismo id de mensaje no se entrega dos veces.
-        # Tampoco se aceptan mensajes viejos (enviados hace más que su TTL).
+        # una celda y volver a enviarla, así que un mismo id de mensaje no se
+        # entrega dos veces. Tampoco se aceptan mensajes cuyo TTL ya venció.
         if m.enviado + m.ttl < ahora or m.enviado > ahora + TOLERANCIA_RELOJ_S:
             return
         with self._lock:
@@ -86,7 +87,8 @@ class ServicioChat:
         self._avisar(dict(item, evento="privado"))
 
     def _al_publicacion(self, datos):
-        """La mesh pregunta si la publicación es válida (para seguir inundándola)."""
+        """La mesh pregunta si la publicación es válida antes de seguir
+        inundándola. De paso, el servicio la guarda y avisa a quien escucha."""
         try:
             p = M.leer_publicacion(datos)
         except M.ErrorMensaje:
@@ -145,7 +147,8 @@ class ServicioChat:
                     del self.publicaciones[k]
 
     def borrar(self):
-        """Pánico: borra buzón, publicaciones y claves de temas."""
+        """Se usa en el pánico: borra el buzón, las publicaciones y las claves
+        de los temas."""
         with self._lock:
             self.buzon.clear()
             self._privados_vistos.clear()
@@ -161,7 +164,7 @@ class ServicioChat:
         with self._lock:
             clave = self._claves.get((tema, frase))
         if clave is None:
-            clave = M.clave_de_tema(tema, frase)            # Argon2id (tarda ~1 s en la Pi)
+            clave = M.clave_de_tema(tema, frase)            # Argon2id tarda cerca de 1 s en la Pi
             with self._lock:
                 self._claves[(tema, frase)] = clave
                 self.temas_privados[M.etiqueta_de_clave(clave)] = (tema, clave)
@@ -281,7 +284,7 @@ class ServicioChat:
     def servir(self, puerto):
         servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         servidor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        servidor.bind(("127.0.0.1", puerto))        # solo desde esta computadora
+        servidor.bind(("127.0.0.1", puerto))        # solo se puede usar desde esta computadora
         servidor.listen(8)
         self._servidor = servidor
         threading.Thread(target=self._aceptar, daemon=True).start()
@@ -330,7 +333,7 @@ class ServicioChat:
                 try:
                     evento = cola.get(timeout=15)
                 except queue.Empty:
-                    evento = {"evento": "latido"}       # detecta si el cliente se fue
+                    evento = {"evento": "latido"}       # sirve para notar si el cliente se desconectó
                 archivo.write((json.dumps(evento, ensure_ascii=False) + "\n").encode())
                 archivo.flush()
                 if evento.get("evento") == "panico":

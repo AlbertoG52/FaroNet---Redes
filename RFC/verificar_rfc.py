@@ -5,19 +5,21 @@ RFC en texto y que sigue coincidiendo con el código.
 
     python3 RFC/verificar_rfc.py
 
-Revisa:
-   1. Solo caracteres ASCII (el enunciado exige el RFC completo en ASCII).
-   2. Ninguna línea de más de 72 columnas.
-   3. Páginas de 58 líneas como máximo, con encabezado y pie numerado en orden.
-   4. Que estén las secciones obligatorias (RFC 7322, privacidad RFC 6973,
-      seguridad, IANA, referencias, direcciones de los autores).
-   5. Que cada cita [X] tenga su referencia y cada referencia se cite.
+Hace estas revisiones:
+   1. Que solo haya caracteres ASCII, porque el enunciado pide el RFC completo
+      en ASCII.
+   2. Que ninguna línea pase de 72 columnas.
+   3. Que las páginas tengan como máximo 58 líneas, con encabezado y un pie
+      numerado en orden.
+   4. Que estén las secciones obligatorias: las de RFC 7322, privacidad
+      (RFC 6973), seguridad, IANA, referencias y direcciones de los autores.
+   5. Que cada cita [X] tenga su referencia y que cada referencia se cite.
    6. Que los números de página del índice sean los correctos.
    7. Que los vectores de prueba del Apéndice A coincidan con lo que calcula
-      el código actual (si alguien cambia un formato, esto falla).
-   8. Que el RFC esté generado con la fuente actual (que nadie lo editó a mano
-      ni olvidó regenerarlo).
-No necesita Raspberry Pi: solo Python 3 y PyNaCl.
+      el código actual; si alguien cambia un formato, esta revisión falla.
+   8. Que el RFC esté generado con la fuente actual, es decir, que nadie lo
+      editó a mano ni olvidó regenerarlo.
+No necesita Raspberry Pi, solo Python 3 y PyNaCl.
 """
 import os
 import re
@@ -81,7 +83,7 @@ def main():
     revisar(f"5. Citas y referencias ({len(refs)} referencias)", not sin_ref and not sin_cita,
             f"citas sin referencia {sin_ref}; referencias sin citar {sin_cita}")
 
-    # índice: "título . . . N" -> el título aparece en la página N
+    # En el índice, una línea "título . . . N" significa que el título está en la página N.
     toc_ini = texto.index("Tabla de contenidos")
     toc_fin = texto.index("1.  Introduccion", texto.index("Direcciones de los autores", toc_ini) + 30)
     errores_toc = []

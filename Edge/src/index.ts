@@ -9,13 +9,13 @@
  *   GET  /directorio                réplica pública del directorio de nodos (JSON)
  *   PUT  /buzon/<id>                buzón muerto: depositar un blob cifrado de 1024 B
  *   GET  /buzon/<id>                buzón muerto: recoger (y borrar) el blob
- *   POST /gw/publicacion            gateway -> edge (firmado con Ed25519)
- *   POST /gw/directorio             gateway -> edge (firmado con Ed25519)
+ *   POST /gw/publicacion            del gateway al edge (firmado con Ed25519)
+ *   POST /gw/directorio             del gateway al edge (firmado con Ed25519)
  *
- * Política de no registro: este código NO guarda CF-Connecting-IP, User-Agent
- * ni ningún identificador. La IP solo se usa, en memoria, para el límite de
- * peticiones (ver control.ts). Las bitácoras de Cloudflare están desactivadas
- * en wrangler.toml ([observability] enabled = false).
+ * Política de no registro: este código no guarda CF-Connecting-IP, User-Agent
+ * ni ningún otro identificador. La IP solo se usa en memoria, para el límite
+ * de peticiones (ver control.ts), y las bitácoras de Cloudflare están
+ * desactivadas en wrangler.toml ([observability] enabled = false).
  */
 import { type Env, error, normalizarTema } from "./comun.ts";
 import { paginaInicio, paginaSala } from "./pagina.ts";
@@ -33,7 +33,7 @@ async function permitido(req: Request, env: Env, categoria: string): Promise<boo
     method: "POST",
     headers: {
       "X-Categoria": categoria,
-      // solo en tránsito hacia el contador en memoria; nunca se guarda
+      // la IP solo viaja hasta el contador en memoria y nunca se guarda
       "X-Cliente": req.headers.get("CF-Connecting-IP") || "desconocido",
     },
   });
@@ -49,7 +49,7 @@ export default {
     const url = new URL(req.url);
     const partes = url.pathname.split("/").filter(Boolean);
     try {
-      // --- gateway (autenticado con firma) ---
+      // --- gateway, autenticado con su firma ---
       if (partes[0] === "gw") {
         if (req.method !== "POST") return error(405, "use POST");
         if (!(await permitido(req, env, "gw"))) return error(429, "demasiadas peticiones");
@@ -93,7 +93,7 @@ export default {
       }
       return error(404, "no encontrado");
     } catch {
-      return error(500, "error interno");   // sin detalles: no se filtra nada
+      return error(500, "error interno");   // sin detalles, para no revelar nada
     }
   },
 };

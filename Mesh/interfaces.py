@@ -1,13 +1,14 @@
 """
-interfaces.py - Los canales físicos de la mesh: UDP (Ethernet o WiFi) y Faro.
+interfaces.py - Los canales físicos de la mesh: UDP (Ethernet o WiFi) y el Faro.
 
-Las dos interfaces ofrecen lo mismo al nodo:
-    enviar(datos, direccion)   a un vecino
-    difundir(datos)            a todos los vecinos de ese canal
-y le entregan lo recibido con  nodo.recibir_crudo(datos, interfaz, direccion).
+Las dos interfaces le ofrecen al nodo las mismas operaciones:
+    enviar(datos, direccion)   envía a un vecino
+    difundir(datos)            envía a todos los vecinos de ese canal
+y le entregan lo que reciben llamando a nodo.recibir_crudo(datos, interfaz, direccion).
 
-`direccion` es (ip, puerto) en UDP y la MAC de 4 bytes del Faro en el Faro.
-Las direcciones viven solo en memoria: nunca se escriben a disco ni a bitácoras.
+En UDP la dirección es el par (ip, puerto); en el Faro es la MAC de 4 bytes.
+Las direcciones solo existen en memoria y nunca se escriben a disco ni a una
+bitácora.
 """
 import collections
 import os
@@ -25,10 +26,11 @@ PUERTO_DESCUBRIMIENTO = 47079
 
 
 class InterfazUDP:
-    """Ethernet o WiFi: paquetes de FaroNet dentro de datagramas UDP.
+    """Ethernet o WiFi: cada paquete de FaroNet viaja dentro de un datagrama UDP.
 
-    Vecinos: los que se indiquen con --vecino ip:puerto y, con descubrir=True,
-    los que respondan al HELLO enviado al grupo multicast de la red local."""
+    Los vecinos son los que se indican con --vecino ip:puerto y, si
+    descubrir=True, también los que responden al HELLO que se envía al grupo
+    multicast de la red local."""
 
     def __init__(self, nombre="wifi", ip="0.0.0.0", puerto=7000, vecinos=(),
                  descubrir=True, costo=2, intervalo_hello=5, intervalo_rutas=10):
@@ -90,7 +92,7 @@ class InterfazUDP:
                     return
                 time.sleep(0.1)
                 continue
-            # (el nodo ignora su propio HELLO multicast porque trae su mismo id)
+            # El nodo ignora su propio HELLO multicast porque trae su mismo id.
             self.nodo.recibir_crudo(datos, self, direccion)
 
     def enviar(self, datos, direccion):
@@ -105,7 +107,8 @@ class InterfazUDP:
             self.enviar(datos, d)
 
     def anunciar(self, datos, direcciones_vecinos=()):
-        """HELLO: a los vecinos conocidos, a los estáticos y al grupo de descubrimiento."""
+        """Envía el HELLO a los vecinos conocidos, a los fijos y al grupo de
+        descubrimiento."""
         self.difundir(datos, direcciones_vecinos)
         if self.descubrir:
             self.enviar(datos, (GRUPO_DESCUBRIMIENTO, PUERTO_DESCUBRIMIENTO))
@@ -123,32 +126,36 @@ class InterfazUDP:
 
 
 class InterfazFaro:
-    """El enlace de luz entre las dos comunidades, sobre la biblioteca de la
-    Capa 1 (DispositivoLuzAdaptador o DispositivoLuzSimulado). Los paquetes
-    viajan con el protocolo PROTO_FARONET (0x0002) de la trama v3.
+    """El enlace de luz entre las dos comunidades. Usa la biblioteca de la
+    Capa 1 (DispositivoLuzAdaptador, o DispositivoLuzSimulado en las pruebas),
+    y los paquetes viajan con el protocolo PROTO_FARONET (0x0002) de la trama v3.
 
-    El Faro va a unos 20-30 bytes/s, así que la luz se reparte con cuidado:
-      - Los HELLO y las RUTAS se mandan cada 300 s (por UDP, cada 5-10 s).
-        Una actualización disparada de RUTAS sale como máximo cada 60 s.
-      - Esta interfaz tiene su propia fila y le pasa al Faro UN envío a la
-        vez. Los paquetes de DATOS (celdas y publicaciones) salen antes que
-        los de control (HELLO, RUTAS, DIRECTORIO).
-      - Un paquete de control nuevo REEMPLAZA al que todavía espera en la fila
-        con el mismo tipo, destino e id (un HELLO nuevo al viejo, unas RUTAS
-        nuevas a las viejas, una entrada del directorio a la del mismo nodo),
-        así el control no se acumula. Si aun así hay MAX_CONTROL esperando,
-        los nuevos se descartan; los de datos siempre se encolan.
+    Como el Faro transmite a unos 20-30 bytes/s, la interfaz reparte la luz
+    con cuidado:
+      - Los HELLO y las RUTAS salen cada 300 s, mientras que por UDP salen
+        cada 5 y 10 s. Una actualización disparada de RUTAS sale, como mucho,
+        una vez cada 60 s.
+      - La interfaz tiene su propia fila y le pasa al Faro un solo envío a la
+        vez. Los paquetes de datos (celdas y publicaciones) salen antes que
+        los de control (HELLO, RUTAS y DIRECTORIO).
+      - Un paquete de control nuevo reemplaza al que todavía espera en la fila
+        con el mismo tipo, destino e id: un HELLO nuevo reemplaza al viejo,
+        unas RUTAS nuevas a las viejas y una entrada del directorio a la del
+        mismo nodo. Así el control no se acumula. Si aun así hay MAX_CONTROL
+        paquetes esperando, los nuevos se descartan; los de datos siempre se
+        encolan.
 
-    Cifrado del enlace (opcional, recomendado): con `clave_enlace` (la misma
-    frase en los dos Faros) cada paquete viaja dentro de un SecretBox de
-    libsodium. Así un observador de la luz no ve ni los HELLO ni las RUTAS, que
-    llevan los ids de los nodos; sin esto, rotar la MAC no impediría seguir al
-    Faro, porque el HELLO dice qué nodo está detrás. También impide que alguien
-    que no tenga la frase inyecte paquetes por la luz. Agrega 40 bytes por
-    paquete (220 -> 260, 550 -> 590): todos siguen midiendo lo mismo."""
+    El enlace se puede cifrar, y es lo recomendado. Con `clave_enlace`, que
+    debe ser la misma frase en los dos Faros, cada paquete viaja dentro de un
+    SecretBox de libsodium. Así quien observa la luz no puede leer los HELLO ni
+    las RUTAS, que llevan los ids de los nodos. Sin el cifrado, rotar la MAC no
+    impediría seguir al Faro, porque el HELLO dice qué nodo está detrás. Además
+    evita que alguien sin la frase inyecte paquetes por la luz. El cifrado
+    agrega 40 bytes a cada paquete (220 pasan a 260 y 550 a 590), de modo que
+    todos siguen midiendo lo mismo."""
 
     MAX_CONTROL = 12
-    SAL_ENLACE = b"faronet-enlace-1"          # 16 bytes, fija: la frase es el secreto
+    SAL_ENLACE = b"faronet-enlace-1"          # 16 bytes; es fija porque el secreto es la frase
 
     def __init__(self, faro, costo=10, intervalo_hello=300, intervalo_rutas=300,
                  clave_enlace=None, disparo_min=60):
@@ -169,11 +176,11 @@ class InterfazFaro:
         self.costo = costo
         self.intervalo_hello = intervalo_hello
         self.intervalo_rutas = intervalo_rutas
-        self.disparo_min = disparo_min        # s entre RUTAS disparadas por la luz
+        self.disparo_min = disparo_min        # segundos mínimos entre dos RUTAS disparadas
         self.nodo = None
-        self._datos = collections.deque()     # (bytes, destino) en orden de llegada
-        self._control = collections.OrderedDict()   # clave -> (bytes, destino)
-        self._en_vuelo = None                 # el Envio que el Faro está mandando
+        self._datos = collections.deque()     # pares (bytes, destino) en orden de llegada
+        self._control = collections.OrderedDict()   # clave del paquete -> (bytes, destino)
+        self._en_vuelo = None                 # el envío que el Faro está transmitiendo
         self._lock = threading.Lock()
         self._hay_trabajo = threading.Event()
         self._cerrada = False
@@ -200,15 +207,17 @@ class InterfazFaro:
             try:
                 datos = self._caja.decrypt(bytes(datos))
             except nacl.exceptions.CryptoError:
-                self.descartados_enlace += 1      # otra frase, o alguien inyectando
+                self.descartados_enlace += 1      # otra frase, o alguien que intenta inyectar paquetes
                 return
         self.nodo.recibir_crudo(datos, self, bytes(mensaje.origen))
 
     @staticmethod
     def _clave_control(datos, destino):
-        """Tipo + destino + el id que va al inicio del cuerpo (HELLO: el nodo que
-        saluda; RUTAS: el primer destino de la lista; DIRECTORIO: el nodo de la
-        entrada). Los tres cuerpos empiezan con 1 byte de versión y el id."""
+        """Clave con la que se reconoce un paquete de control repetido: su
+        tipo, su destino y el id que va al inicio del cuerpo. En un HELLO ese
+        id es el nodo que saluda, en RUTAS el primer destino de la lista y en
+        DIRECTORIO el nodo de la entrada. Los tres cuerpos empiezan con 1 byte
+        de versión seguido del id."""
         return (datos[1], bytes(destino), bytes(datos[15:23]))
 
     def pendientes(self):
@@ -223,7 +232,7 @@ class InterfazFaro:
             if es_control:
                 clave = self._clave_control(datos, destino)
                 if clave in self._control:
-                    self._control[clave] = (datos, destino)     # mismo lugar, contenido nuevo
+                    self._control[clave] = (datos, destino)     # conserva su lugar en la fila con el contenido nuevo
                     self.estadisticas["control_reemplazados"] += 1
                 elif len(self._control) >= self.MAX_CONTROL:
                     self.estadisticas["control_descartados"] += 1
@@ -236,7 +245,8 @@ class InterfazFaro:
         return True
 
     def _despachar(self):
-        """Si el Faro está libre, le pasa el siguiente envío: datos primero."""
+        """Si el Faro está libre, le pasa el siguiente envío, dando prioridad
+        a los datos."""
         with self._lock:
             if self._cerrada:
                 return
@@ -258,7 +268,7 @@ class InterfazFaro:
         self._hay_trabajo.set()
 
     def _despachador(self):
-        """Hilo: cuando el Faro termina un envío, le pasa el siguiente."""
+        """Hilo que espera a que el Faro termine cada envío y le pasa el siguiente."""
         while not self._cerrada:
             self._hay_trabajo.wait(1.0)
             self._hay_trabajo.clear()
@@ -267,7 +277,7 @@ class InterfazFaro:
                     envio = self._en_vuelo
                     quedan = bool(self._datos or self._control)
                 if envio is not None and not envio.listo.wait(0.2):
-                    continue                    # el Faro sigue ocupado
+                    continue                    # el Faro sigue transmitiendo
                 if not quedan:
                     break
                 self._despachar()
@@ -276,17 +286,18 @@ class InterfazFaro:
         return self._encolar(datos, bytes(direccion), es_control)
 
     def difundir(self, datos, direcciones_vecinos=(), es_control=False):
-        # En la luz todos los Faros comparten el medio: una difusión llega a todos.
+        # En la luz todos los Faros comparten el medio, así que una difusión
+        # les llega a todos.
         return self._encolar(datos, self._DIFUSION, es_control)
 
     def anunciar(self, datos, direcciones_vecinos=()):
         return self._encolar(datos, self._DIFUSION, True)
 
     def panico(self):
-        """Pánico por software: lo mismo que el botón físico del Faro (borra la
-        MAC, enciende el LED rojo). El Faro, a su vez, llama a nodo.panico(),
-        que ya está en marcha y no hace nada más."""
-        self._vaciar()                    # lo que esperaba en la fila no sale
+        """Pánico activado por software. Hace lo mismo que el botón físico del
+        Faro: borra la MAC y enciende el LED rojo. El Faro, a su vez, llama a
+        nodo.panico(), que ya está en marcha y no vuelve a hacer nada."""
+        self._vaciar()                    # lo que esperaba en la fila ya no sale
         try:
             self.faro.activar_panico()
         except Exception:

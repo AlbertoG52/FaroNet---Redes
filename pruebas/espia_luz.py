@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-espia_luz.py - Prueba de minimización de metadatos: un "observador del medio"
-que graba TODO lo que viaja por la luz SIMULADA y busca en esos bytes los
+espia_luz.py - Prueba de minimización de metadatos. Hace de observador del
+medio: graba todo lo que viaja por la luz simulada y busca en esos bytes los
 identificadores de los nodos de FaroNet.
 
-    # terminal 1 (la red, sin y luego con el enlace cifrado):
+    # terminal 1: la red, primero sin cifrar el enlace y luego cifrado
     python3 demo_red.py
     python3 demo_red.py --clave-enlace "frase del enlace"
-    # terminal 2, mientras la red corre:
+    # terminal 2, mientras la red está corriendo:
     python3 pruebas/espia_luz.py --segundos 30 --api 7101
 
-Resultado esperado:
-    sin --clave-enlace : el espía ve los ids de todos los nodos (van en los HELLO/RUTAS)
-    con --clave-enlace : el espía no ve ninguno, y los paquetes miden lo mismo
+Lo que se espera ver:
+    sin --clave-enlace : el espía encuentra los ids de todos los nodos, que viajan en los HELLO y las RUTAS
+    con --clave-enlace : el espía no encuentra ninguno y los paquetes siguen midiendo lo mismo
 
-Solo funciona con el Faro simulado (UDP multicast). Con la luz real el
-equivalente es un tercer receptor infrarrojo grabando, que no es necesario.
+Solo funciona con el Faro simulado, que usa UDP multicast. Con la luz real,
+lo equivalente sería un tercer receptor infrarrojo grabando.
 """
 import argparse
 import json
@@ -23,7 +23,7 @@ import socket
 import struct
 import time
 
-GRUPO, PUERTO = "239.255.70.78", 47078       # los del DispositivoLuzSimulado
+GRUPO, PUERTO = "239.255.70.78", 47078       # los mismos que usa DispositivoLuzSimulado
 
 
 def ids_de_la_red(api):
@@ -61,7 +61,7 @@ def main():
             d, _ = s.recvfrom(4096)
         except socket.timeout:
             continue
-        if d != b"\x00":                 # el byte 0 es la "portadora" del simulado
+        if d != b"\x00":                 # el byte 0 hace de "portadora" en el simulado
             luz += d
             tramas += 1
     ids = ids_de_la_red(a.api)

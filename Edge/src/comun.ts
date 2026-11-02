@@ -1,34 +1,34 @@
 /**
  * comun.ts - Constantes y utilidades compartidas por el Worker de FaroNet.
  *
- * Solo se usa WebCrypto (la criptografía que trae Cloudflare Workers): no se
+ * Solo se usa WebCrypto, la criptografía que trae Cloudflare Workers; no se
  * implementa ninguna primitiva criptográfica propia.
  */
 
 export interface Env {
   SALAS: DurableObjectNamespaceLike;      // una sala (Durable Object) por tema público
   BUZONES: DurableObjectNamespaceLike;    // un buzón muerto por identificador
-  CONTROL: DurableObjectNamespaceLike;    // autenticación del gateway, directorio, límites
-  GATEWAY_LLAVE: string;                  // llave pública Ed25519 del gateway (hex, NO es secreta)
+  CONTROL: DurableObjectNamespaceLike;    // autenticación del gateway, directorio y límites
+  GATEWAY_LLAVE: string;                  // llave pública Ed25519 del gateway en hex (no es secreta)
 }
 
-// Tipos mínimos de Durable Objects (los reales vienen de @cloudflare/workers-types).
+// Tipos mínimos de Durable Objects; los completos vienen de @cloudflare/workers-types.
 export interface DurableObjectNamespaceLike {
   idFromName(nombre: string): unknown;
   get(id: unknown): { fetch(req: Request | string, init?: RequestInit): Promise<Response> };
 }
 
 export const VERSION = 1;
-export const VENTANA_FIRMA_S = 60;          // el gateway firma con su hora; ±60 s
+export const VENTANA_FIRMA_S = 60;          // diferencia máxima entre la hora del gateway y la del Worker
 export const MAX_CUERPO_GATEWAY = 64 * 1024;
 export const MAX_TEMA = 32;
 export const MAX_TEXTO = 1024;
 export const TTL_MAX_S = 24 * 3600;
-export const TAM_BLOB = 1024;               // los blobs del buzón muerto miden SIEMPRE 1024 B
+export const TAM_BLOB = 1024;               // los blobs del buzón muerto siempre miden 1024 B
 export const TTL_BUZON_DEF_S = 3600;
 export const MAX_PUBLICACIONES_POR_SALA = 200;
 
-/** Cabeceras de todas las respuestas: no cachear, no filtrar el origen, CSP estricta. */
+/** Cabeceras de todas las respuestas: sin caché, sin revelar el origen y con una CSP estricta. */
 export const CABECERAS_SEGURAS: Record<string, string> = {
   "Cache-Control": "no-store",
   "Referrer-Policy": "no-referrer",
@@ -82,10 +82,10 @@ export async function verificarEd25519(llave: Uint8Array, firma: Uint8Array,
 }
 
 /**
- * Mensaje que firma el gateway en cada petición (versión 1):
+ * Arma el mensaje que firma el gateway en cada petición (versión 1):
  *   "FARONET-GW-1\n" + MÉTODO + "\n" + RUTA + "\n" + TIEMPO + "\n" + NONCE + "\n" + CUERPO
- * TIEMPO (segundos Unix) y NONCE (16 bytes al azar, hex) evitan que una
- * petición capturada se pueda repetir (replay).
+ * El TIEMPO (segundos Unix) y el NONCE (16 bytes al azar, en hex) impiden que
+ * una petición capturada se vuelva a usar (replay).
  */
 export function mensajeFirmado(metodo: string, ruta: string, tiempo: string, nonce: string,
                                cuerpo: Uint8Array): Uint8Array {
@@ -98,10 +98,11 @@ export function mensajeFirmado(metodo: string, ruta: string, tiempo: string, non
 }
 
 /**
- * Lee una entrada del directorio de FaroNet (formato binario v1, ver Mesh/identidad.py):
+ * Lee una entrada del directorio de FaroNet (formato binario v1, ver Mesh/identidad.py)
+ * y verifica su firma Ed25519. El formato es:
  *   Ver(1) Id(8) Ed25519(32) Creada(4) Expira(4) Flags(1) LongAlias(1) Alias Firma(64)
- * y verifica su firma Ed25519. La comprobación id = BLAKE2b(llave)[:8] no se puede hacer
- * aquí (WebCrypto no trae BLAKE2b); la hace cualquiera con verificar_directorio.py.
+ * Aquí no se puede comprobar que id = BLAKE2b(llave)[:8], porque WebCrypto no
+ * trae BLAKE2b; esa comprobación la puede hacer cualquiera con verificar_directorio.py.
  */
 export interface EntradaDirectorio {
   id: string; alias: string; llave_firma: string; creada: number; expira: number;

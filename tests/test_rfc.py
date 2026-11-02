@@ -1,4 +1,4 @@
-"""El RFC (RFC/rfc-faronet.txt) cumple el formato y coincide con el código."""
+"""Comprueba que el RFC (RFC/rfc-faronet.txt) cumple el formato y coincide con el código."""
 import os
 import subprocess
 import sys

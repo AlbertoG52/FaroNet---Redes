@@ -1,12 +1,12 @@
 /**
- * simulacion.ts - Prueba el Worker SIN Cloudflare: simula en memoria los
- * Durable Objects (almacenamiento, alarmas, WebSockets) y ejecuta el código
- * real de src/. Requiere Node 22.18 o más nuevo (entiende TypeScript).
+ * simulacion.ts - Prueba el Worker sin Cloudflare: simula en memoria los
+ * Durable Objects (almacenamiento, alarmas y WebSockets) y ejecuta el código
+ * real de src/. Necesita Node 22.18 o más nuevo, que ya entiende TypeScript.
  *
  *     node prueba/simulacion.ts
  *     node prueba/simulacion.ts vectores.json   # además verifica firmas hechas en Python
  *
- * La prueba definitiva es con `npx wrangler dev`, que usa el runtime real.
+ * La prueba definitiva se hace con `npx wrangler dev`, que usa el runtime real.
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -14,7 +14,7 @@ import { bytesAHex, leerEntrada, mensajeFirmado, verificarEd25519, hexABytes } f
 
 import { crearEntorno } from "./runtime.ts";
 
-// llave del gateway (en la realidad es la Ed25519 del nodo, generada con PyNaCl)
+// Llave del gateway para la prueba; en la red real es la Ed25519 del nodo, generada con PyNaCl.
 const par: any = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
 const publica = new Uint8Array(await crypto.subtle.exportKey("raw", par.publicKey));
 const { worker, env } = await crearEntorno(bytesAHex(publica));
@@ -108,7 +108,7 @@ await prueba("buzón muerto: depositar, recoger una sola vez", async () => {
   assert.equal((await pedir(`/buzon/${id}`, { method: "PUT", body: blob })).status, 409);
   const r = await pedir(`/buzon/${id}`);
   assert.deepEqual(new Uint8Array(await r.arrayBuffer()), blob);
-  assert.equal((await pedir(`/buzon/${id}`)).status, 404);           // ya se borró
+  assert.equal((await pedir(`/buzon/${id}`)).status, 404);           // ya se había borrado
   assert.equal((await pedir(`/buzon/${id}`, { method: "PUT", body: new Uint8Array(10) })).status, 400);
   assert.equal((await pedir(`/buzon/xyz`)).status, 400);
 });
@@ -149,7 +149,7 @@ if (process.argv[2]) {
     assert.equal(await leerEntrada(mala), null);
   });
   await prueba("el directorio publicado por el gateway queda en /directorio", async () => {
-    env.GATEWAY_LLAVE = v.llave;          // ahora firma la llave de Python
+    env.GATEWAY_LLAVE = v.llave;          // desde aquí firma la llave generada en Python
     const r = await pedir(v.ruta_dir, { method: "POST", body: v.cuerpo_dir, headers: v.cabeceras_dir });
     assert.equal(r.status, 200, await r.clone().text());
     const d: any = await (await pedir("/directorio")).json();

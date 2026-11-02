@@ -1,28 +1,30 @@
 """
 gateway.py - Puerta de enlace entre FaroNet y el edge (Cloudflare Workers).
 
-Corre dentro del nodo de la Pi B (faronet_nodo.py --worker URL). Hace dos cosas:
+El gateway corre dentro del nodo de la Pi B (faronet_nodo.py --worker URL) y
+se encarga de dos cosas:
 
-  1) Cada publicación de un TEMA PÚBLICO que llega a la mesh se envía al
-     Worker (POST /gw/publicacion), que la pone en la sala del tema y en su
-     feed. Los mensajes privados y los temas privados NUNCA pasan por aquí:
-     el servicio de la Capa 7 solo avisa de las publicaciones públicas.
-  2) Envía el directorio de nodos (entradas firmadas) para la réplica pública
-     (POST /gw/directorio): cuando cambia (como máximo cada 30 s) y, aunque no
-     cambie, cada 5 minutos.
+  1) Envía al Worker (POST /gw/publicacion) cada publicación de un tema
+     público que llega a la mesh, y el Worker la pone en la sala del tema y
+     en su feed. Los mensajes privados y los temas privados nunca pasan por
+     aquí, porque el servicio de la Capa 7 solo le avisa de las públicas.
+  2) Envía el directorio de nodos, con sus entradas firmadas, para la réplica
+     pública (POST /gw/directorio). Lo hace cuando cambia, como mucho una vez
+     cada 30 s, y cada 5 minutos aunque no cambie.
 
-Autenticación: cada petición va firmada con la llave Ed25519 del nodo
-gateway. El mensaje firmado es (ver Edge/src/comun.ts):
+Cada petición va firmada con la llave Ed25519 del nodo gateway. El mensaje
+que se firma es el siguiente (el Worker lo arma igual en Edge/src/comun.ts):
 
     "FARONET-GW-1\\n" + "POST" + "\\n" + ruta + "\\n" + tiempo + "\\n" + nonce + "\\n" + cuerpo
 
-y viaja en las cabeceras X-FaroNet-Tiempo, X-FaroNet-Nonce y X-FaroNet-Firma.
-El Worker rechaza firmas malas, horas con más de 60 s de diferencia y nonces
-repetidos (replay). Por eso el reloj de la Pi debe estar en hora (`date`).
+La firma viaja en las cabeceras X-FaroNet-Tiempo, X-FaroNet-Nonce y
+X-FaroNet-Firma. El Worker rechaza las firmas inválidas, las horas con más de
+60 s de diferencia y los nonces repetidos (replay), por lo que el reloj de la
+Pi tiene que estar en hora.
 
-Privacidad: las publicaciones no tienen autor; el gateway no agrega nada que
-identifique a nadie y no guarda bitácoras. Lo que espera para salir vive en
-memoria y se descarta al vencer su TTL.
+En cuanto a la privacidad, las publicaciones no tienen autor, el gateway no
+les agrega nada que identifique a nadie y no guarda bitácoras. Lo que espera
+para salir vive en memoria y se descarta cuando vence su TTL.
 """
 import json
 import os
@@ -78,7 +80,7 @@ class Gateway:
 
     def detener(self):
         self._activo = False
-        while True:                                  # pánico: vaciar lo pendiente
+        while True:                                  # en el pánico se descarta lo pendiente
             try:
                 self.cola.get_nowait()
             except queue.Empty:
@@ -89,7 +91,7 @@ class Gateway:
             print(f"[gateway] {texto}", flush=True)
 
     def _encolar(self, evento):
-        """La llama ServicioChat por cada publicación PÚBLICA nueva."""
+        """ServicioChat la llama por cada publicación pública nueva."""
         item = {"tema": evento["tema"], "texto": evento["texto"], "id": evento["id"],
                 "creada": evento["creada"], "vence": evento["vence"], "_intentos": 0}
         try:
@@ -141,7 +143,7 @@ class Gateway:
         if estado == 200:
             self.estadisticas["publicadas"] += 1
             return True
-        if estado in (0, 429) or estado >= 500:            # problema temporal: reintentar
+        if estado in (0, 429) or estado >= 500:            # es un problema temporal, así que se reintenta
             item["_intentos"] += 1
             espera = min(REINTENTO_MAX_S, REINTENTO_MIN_S * 2 ** (item["_intentos"] - 1))
             if item["vence"] > time.time() + espera:

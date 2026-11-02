@@ -1,6 +1,6 @@
 """
-Pruebas de las capas 2/3 (mesh) y 7 (aplicación). No necesitan Raspberry Pi
-ni red: usan una "red en memoria".
+Pruebas de las capas 2 y 3 (la mesh) y de la Capa 7 (la aplicación). No
+necesitan Raspberry Pi ni una red real, porque usan una red en memoria.
 
     python3 -m unittest discover -s tests -v
 """
@@ -28,7 +28,7 @@ from servicio import ServicioChat           # noqa: E402
 
 # ---------------------------------------------------------------- red en memoria
 class Hub:
-    """Entrega paquetes entre interfaces de memoria, en un hilo aparte."""
+    """Entrega los paquetes entre las interfaces en memoria, desde un hilo aparte."""
 
     def __init__(self):
         self.puntos = {}
@@ -88,9 +88,9 @@ class PruebasPaquete(unittest.TestCase):
         crudo = bytearray(P.Paquete(P.TIPO_HELLO, b"abc").a_bytes())
         crudo[0] = 9
         with self.assertRaises(P.ErrorPaquete):
-            P.Paquete.desde_bytes(bytes(crudo))         # versión desconocida
+            P.Paquete.desde_bytes(bytes(crudo))         # una versión desconocida
         with self.assertRaises(P.ErrorPaquete):
-            P.Paquete.desde_bytes(b"x" * 100)           # tamaño inválido
+            P.Paquete.desde_bytes(b"x" * 100)           # un tamaño inválido
         with self.assertRaises(P.ErrorPaquete):
             P.Paquete(P.TIPO_HELLO, b"x" * 300).a_bytes()
 
@@ -115,7 +115,7 @@ class PruebasCebolla(unittest.TestCase):
         for i, nodo in enumerate(self.ids[1:4]):
             self.assertEqual(len(celda), cebolla.TAM_CELDA)       # siempre el mismo tamaño
             with self.assertRaises(cebolla.ErrorCebolla):
-                cebolla.pelar(intruso.privada, celda)            # otro nodo no la abre
+                cebolla.pelar(intruso.privada, celda)            # otro nodo no puede abrirla
             accion, siguiente, celda = cebolla.pelar(nodo.privada, celda)
             self.assertEqual(accion, "reenviar")
             esperado = self.ids[i + 2].id if i < 2 else self.dest.id
@@ -143,14 +143,14 @@ class PruebasDirectorio(unittest.TestCase):
         yo = Identidad()
         crudo = yo.crear_entrada("ana").a_bytes()
         self.assertEqual(Entrada.desde_bytes(crudo).alias, "ana")
-        for posicion in (5, 30, len(crudo) - 3):           # id, llave, firma
+        for posicion in (5, 30, len(crudo) - 3):           # se altera el id, la llave y la firma
             malo = bytearray(crudo)
             malo[posicion] ^= 1
             with self.assertRaises(ErrorEntrada):
                 Entrada.desde_bytes(bytes(malo))
 
     def test_suplantacion(self):
-        """Firmar con mi llave una entrada con el id de otro: se rechaza."""
+        """Una entrada firmada con una llave pero con el id de otro nodo se rechaza."""
         victima, atacante = Identidad(), Identidad()
         e = victima.crear_entrada("victima")
         e.llave_firma = bytes(atacante.verificacion)
@@ -181,9 +181,9 @@ class PruebasRutas(unittest.TestCase):
         t.recibir_anuncio(b, 2, [(b, 0), (c, 10), (a, 2)], 10)
         self.assertEqual(t.siguiente_salto(c), b)
         self.assertEqual({r.destino: r.metrica for r in t.listar()}, {b: 2, c: 12})
-        # horizonte dividido: a B se le anuncia C como inalcanzable
+        # Horizonte dividido: a B se le anuncia C como inalcanzable.
         self.assertIn((c, INFINITO), t.vector_para(b))
-        # B avisa que C se cayó
+        # B avisa que C se cayó.
         t.recibir_anuncio(b, 2, [(c, INFINITO)], 10)
         self.assertIsNone(t.siguiente_salto(c))
         t.quitar_vecino(b)
@@ -202,7 +202,7 @@ class PruebasMensajes(unittest.TestCase):
         with self.assertRaises(M.ErrorMensaje):
             M.armar_privado("x" * (M.MAX_TEXTO_PRIVADO + 1), identidad=ana,
                             llave_destino=beto.publica)
-        # un tercero que se hace pasar por ana no pasa la verificación
+        # Un tercero que se hace pasar por ana no pasa la verificación.
         falso = Identidad()
         datos = M.armar_privado("soy ana", identidad=falso, llave_destino=beto.publica)
         datos = datos[:3] + ana.id + datos[11:]
@@ -214,7 +214,7 @@ class PruebasMensajes(unittest.TestCase):
         self.assertEqual((p.tema, p.texto()), ("redes", "público"))
         clave = M.clave_de_tema("grupo", "frase larga")
         p = M.leer_publicacion(M.armar_publicacion("grupo", "secreto", clave))
-        self.assertNotIn(b"grupo", p.crudo)               # ni el nombre del tema viaja
+        self.assertNotIn(b"grupo", p.crudo)               # ni siquiera el nombre del tema viaja
         self.assertNotIn(b"secreto", p.crudo)
         self.assertEqual(p.texto(clave), "secreto")
         with self.assertRaises(M.ErrorMensaje):
@@ -223,7 +223,7 @@ class PruebasMensajes(unittest.TestCase):
 
 # ---------------------------------------------------------------- red completa
 class PruebasRed(unittest.TestCase):
-    """Dos comunidades unidas por un solo enlace caro (como el Faro):
+    """Dos comunidades unidas por un solo enlace caro, como el Faro:
 
         a1 - a2 - a3 - pA ====(costo 10)==== pB - b1 - b2
     """
@@ -269,13 +269,13 @@ class PruebasRed(unittest.TestCase):
         self.assertEqual(m["alias"], "a1")
 
     def test_repeticion_de_un_privado_se_descarta(self):
-        """Un nodo malicioso reenvía la misma celda: el destinatario la ve una sola vez."""
+        """Si un nodo malicioso reenvía la misma celda, el destinatario la ve una sola vez."""
         s = self.servicios["b1"]
         a2 = self.nodos["a2"]
         datos = M.armar_privado("una sola vez", identidad=a2.identidad,
                                 llave_destino=self.nodos["b1"].identidad.publica)
         s._al_privado(datos)
-        s._al_privado(datos)                                   # la repetición
+        s._al_privado(datos)                                   # la celda repetida
         self.assertEqual(sum(1 for m in s.buzon if m["texto"] == "una sola vez"), 1)
 
     def test_publicacion_llega_a_todos(self):
@@ -306,7 +306,7 @@ class PruebasRed(unittest.TestCase):
         self.assertEqual(self.servicios["b2"].buzon, [])
         self.assertEqual(len(nodo.directorio), 0)
         self.assertFalse(self.servicios["b2"].atender({"cmd": "buzon"})["ok"])
-        # los demás dejan de verlo cuando su HELLO vence
+        # Los demás dejan de verlo cuando vence su HELLO.
         self.assertTrue(esperar(lambda: nodo.id not in self.nodos["b1"].vecinos, 10))
 
     def test_sin_suficientes_nodos(self):
@@ -321,7 +321,7 @@ if __name__ == "__main__":
 
 # ---------------------------------------------------------------- enlace de luz
 class FaroFalso:
-    """Imita la interfaz de DispositivoLuzAdaptador que usa InterfazFaro."""
+    """Imita la parte de DispositivoLuzAdaptador que usa InterfazFaro."""
 
     def __init__(self):
         self.enviados, self.oyente, self.borradores = [], None, []
@@ -365,15 +365,15 @@ class PruebasEnlaceFaro(unittest.TestCase):
     def test_sin_clave_el_observador_ve_el_id(self):
         faro, interfaz, nodo = self.armar(None)
         nodo.anunciar_en(interfaz)
-        self.assertIn(nodo.id, faro.enviados[-1])           # por eso conviene cifrar
+        self.assertIn(nodo.id, faro.enviados[-1])           # por eso conviene cifrar el enlace
 
     def test_con_clave_el_observador_no_ve_nada(self):
         faro, interfaz, nodo = self.armar("frase del enlace")
         nodo.anunciar_en(interfaz)
         crudo = faro.enviados[-1]
         self.assertNotIn(nodo.id, crudo)
-        self.assertEqual(len(crudo), P.TAM_CONTROL + 40)      # tamaño fijo también cifrado
-        # el otro Faro, con la misma frase, lo entiende; con otra, lo descarta
+        self.assertEqual(len(crudo), P.TAM_CONTROL + 40)      # cifrado, el tamaño también es fijo
+        # El otro Faro lo entiende si tiene la misma frase y lo descarta si tiene otra.
         faro2, interfaz2, nodo2 = self.armar("frase del enlace")
         faro3, interfaz3, nodo3 = self.armar("otra frase")
         mensaje = type("M", (), {"datos": crudo, "origen": b"\x01\x02\x03\x04"})()
@@ -386,13 +386,14 @@ class PruebasEnlaceFaro(unittest.TestCase):
     def test_panico_por_software_borra_tambien_el_faro(self):
         faro, interfaz, nodo = self.armar(None)
         nodo.panico()
-        self.assertTrue(faro.panico_activado)                # MAC borrada y LED rojo
+        self.assertTrue(faro.panico_activado)                # MAC borrada y LED rojo encendido
         self.assertTrue(nodo.panico_activado)
 
 
 class FaroOcupado(FaroFalso):
-    """Como FaroFalso, pero cada envío queda "en el aire" hasta que la prueba
-    llama terminar(): así se ve qué le pasa la interfaz al Faro y en qué orden."""
+    """Es como FaroFalso, pero cada envío queda "en el aire" hasta que la prueba
+    llama a terminar(). Así se puede ver qué le pasa la interfaz al Faro y en
+    qué orden."""
 
     def __init__(self):
         super().__init__()
@@ -410,7 +411,8 @@ class FaroOcupado(FaroFalso):
 
 
 class PruebasFilaDelFaro(unittest.TestCase):
-    """La luz es lenta: datos antes que control y el control no se acumula."""
+    """Como la luz es lenta, los datos salen antes que el control y el control
+    no se acumula."""
 
     def armar(self):
         from interfaces import InterfazFaro
@@ -432,13 +434,13 @@ class PruebasFilaDelFaro(unittest.TestCase):
         nodo.anunciar_en(interfaz)                              # sale de inmediato
         self.assertEqual(len(faro.enviados), 1)
         rutas = P.armar_rutas([(b"R" * 8, 1)])[0].a_bytes()
-        interfaz.enviar(rutas, destino, es_control=True)         # espera
+        interfaz.enviar(rutas, destino, es_control=True)         # queda esperando
         dato = P.Paquete(P.TIPO_PUBLICACION, b"hola").a_bytes()
-        interfaz.enviar(dato, destino, es_control=False)         # llega después...
+        interfaz.enviar(dato, destino, es_control=False)         # llega después,
         self.assertEqual(interfaz.pendientes(), (1, 1))
         faro.terminar()
         self.assertTrue(esperar(lambda: len(faro.enviados) >= 2, 5))
-        self.assertEqual(faro.enviados[1][1], P.TIPO_PUBLICACION)    # ...pero sale primero
+        self.assertEqual(faro.enviados[1][1], P.TIPO_PUBLICACION)    # pero sale primero
         faro.terminar()
         self.assertTrue(esperar(lambda: len(faro.enviados) >= 3, 5))
         self.assertEqual(faro.enviados[2][1], P.TIPO_RUTAS)
@@ -447,7 +449,7 @@ class PruebasFilaDelFaro(unittest.TestCase):
     def test_un_hello_nuevo_reemplaza_al_que_espera(self):
         faro, interfaz, nodo = self.armar()
         for _ in range(5):
-            nodo.anunciar_en(interfaz)          # 1 sale, los otros 4 son uno solo en la fila
+            nodo.anunciar_en(interfaz)          # sale 1 y los otros 4 quedan como uno solo en la fila
         self.assertEqual(interfaz.pendientes(), (0, 1))
         self.assertEqual(interfaz.estadisticas["control_reemplazados"], 3)
         faro.terminar()
@@ -462,7 +464,7 @@ class PruebasFilaDelFaro(unittest.TestCase):
         destino = b"\x01\x02\x03\x04"
         nodo.anunciar_en(interfaz)
         entradas = [Identidad().crear_entrada(alias=f"n{i}") for i in range(3)]
-        for entrada in entradas + entradas[:1]:          # la primera, dos veces
+        for entrada in entradas + entradas[:1]:          # la primera va dos veces
             interfaz.enviar(P.Paquete(P.TIPO_DIRECTORIO, entrada.a_bytes(), ttl=1).a_bytes(),
                             destino, es_control=True)
         self.assertEqual(interfaz.pendientes(), (0, 3))
@@ -477,4 +479,4 @@ class PruebasFilaDelFaro(unittest.TestCase):
         self.assertEqual(interfaz.pendientes(), (0, 0))
         faro.terminar()
         time.sleep(0.5)
-        self.assertEqual(len(faro.enviados), 1)          # lo que esperaba no salió
+        self.assertEqual(len(faro.enviados), 1)          # lo que esperaba en la fila no salió

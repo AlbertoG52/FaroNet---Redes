@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-pi_comunidad.py - Levanta UNA comunidad de FaroNet completa dentro de una
-Raspberry Pi: el nodo con el Faro real más 2 nodos extra (procesos de la misma
-Pi). Así cada Pi es una comunidad entera y la prueba con los Faros no necesita
-laptops: para un mensaje privado hacen falta 5 nodos (emisor, 3 intermedios y
-destino) y aquí hay 6 (3 en cada Pi).
+pi_comunidad.py - Levanta una comunidad completa de FaroNet dentro de una
+Raspberry Pi: el nodo con el Faro real y 2 nodos más, que son otros procesos
+de la misma Pi. Así cada Pi es una comunidad entera y la prueba con los Faros
+no necesita otras computadoras. Un mensaje privado necesita 5 nodos (emisor,
+3 intermedios y destino), y de esta forma hay 6, tres en cada Pi.
 
     # Pi A (comunidad 1): no necesita Internet, solo la luz
     sudo systemctl start pigpiod
@@ -15,12 +15,12 @@ destino) y aquí hay 6 (3 en cada Pi).
     python3 pi_comunidad.py --lado B --pausa 40 --clave-enlace "frase acordada" \\
         --worker https://faronet.<cuenta>.workers.dev
 
-Luego, en otra terminal de la misma Pi:
+Después, en otra terminal de la misma Pi:
     python3 App/chat.py --api 7101 interactivo      # Pi A: nodo a1
     python3 App/chat.py --api 7111 interactivo      # Pi B: nodo b1
 
-Sin Raspberry Pi (para ensayar en una laptop): --faro simulado.
-Ctrl+C detiene los 3 nodos de esta Pi.
+Para ensayar sin Raspberry Pi, en una computadora, se usa --faro simulado.
+Ctrl+C detiene los 3 nodos de la Pi.
 """
 import argparse
 import os
@@ -31,17 +31,18 @@ import sys
 import time
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
-CODIGO_PANICO = 3      # el mismo que en faronet_nodo.py
+CODIGO_PANICO = 3      # el mismo código que usa faronet_nodo.py
 
 LADOS = {
-    #     alias Faro, UDP, API ;  nodos extra (alias, UDP, API)
+    # Por cada lado: el nodo del Faro (alias, UDP, API) y los nodos extra (alias, UDP, API)
     "A": (("faroA", 7004, 7104), [("a1", 7001, 7101), ("a2", 7002, 7102)]),
     "B": (("faroB", 7013, 7113), [("b1", 7011, 7111), ("b2", 7012, 7112)]),
 }
 
 
 def panico_en(api):
-    """Pide el pánico a un nodo por su API local: borra sus llaves y se detiene."""
+    """Le pide el pánico a un nodo por su API local, para que borre sus llaves
+    y se detenga."""
     try:
         with socket.create_connection(("127.0.0.1", api), timeout=5) as s:
             s.sendall(b'{"cmd": "panico"}\n')
@@ -85,7 +86,7 @@ def main():
     if a.depurar:
         cmd_faro += ["--depurar"]
 
-    procesos = [(faro_alias, subprocess.Popen(cmd_faro))]          # el del Faro muestra su salida
+    procesos = [(faro_alias, subprocess.Popen(cmd_faro))]          # solo el nodo del Faro muestra su salida
     time.sleep(1)
     for alias, udp, api in extras:
         cmd = base + ["--alias", alias, "--puerto", str(udp), "--api", str(api),
@@ -106,8 +107,8 @@ def main():
                     print(f"[el nodo {alias} terminó (código {proc.returncode})]")
                     procesos.remove((alias, proc))
                     if alias == faro_alias and proc.returncode == CODIGO_PANICO:
-                        # El botón de pánico es de toda la Pi: los otros nodos de esta
-                        # Pi también borran sus llaves y se detienen.
+                        # El botón de pánico es de toda la Pi, así que los otros nodos
+                        # también borran sus llaves y se detienen.
                         for otro, _udp, api in extras:
                             ok = panico_en(api)
                             print(f"[pánico también en {otro}: {'hecho' if ok else 'no respondió'}]")

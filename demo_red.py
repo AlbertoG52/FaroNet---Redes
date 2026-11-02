@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-demo_red.py - Levanta una red FaroNet COMPLETA en una sola computadora, sin
-Raspberry Pi: dos comunidades unidas solo por un Faro SIMULADO.
+demo_red.py - Levanta una red FaroNet completa en una sola computadora, sin
+Raspberry Pi: dos comunidades unidas únicamente por un Faro simulado.
 
     Comunidad 1:  a1 - a2 - a3 - faroA ~~~ luz simulada ~~~ faroB - b1 - b2  :Comunidad 2
                                                            (gateway)
 
     python3 demo_red.py                    # luz simulada rápida
-    python3 demo_red.py --lento            # luz simulada como la real (25 B/s, 5 % pérdida)
-    python3 demo_red.py --worker http://127.0.0.1:8787   # faroB además es el gateway hacia el Worker
+    python3 demo_red.py --lento            # luz simulada parecida a la real (25 B/s, 5 % de pérdida)
+    python3 demo_red.py --worker http://127.0.0.1:8787   # faroB es además el gateway hacia el Worker
 
-Luego, en otras terminales (un chat por nodo):
+Después, en otras terminales, se abre un chat por nodo:
     python3 App/chat.py --api 7101 interactivo      # a1
     python3 App/chat.py --api 7111 interactivo      # b1
 
-Ctrl+C detiene todos los nodos. Por privacidad (sin registros), lo que imprime cada
-nodo NO se guarda; con --guardar-salida queda en demo_logs/ para depurar.
+Ctrl+C detiene todos los nodos. Como la red no guarda registros, lo que imprime
+cada nodo no se guarda; con --guardar-salida queda en demo_logs/ para depurar.
 """
 import argparse
 import os

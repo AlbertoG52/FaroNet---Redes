@@ -1,28 +1,28 @@
 #!/usr/bin/env python3
 """
-formatear_rfc.py - Convierte la fuente del RFC (UTF-8, cómoda de editar) en
-el RFC final en ASCII con el formato clásico de texto de los RFC:
+formatear_rfc.py - Convierte la fuente del RFC, escrita en UTF-8 para que sea
+cómoda de editar, en el RFC final en ASCII con el formato clásico de texto:
 
-    - solo caracteres ASCII (las tildes y la ñ se quitan: "versión" -> "version");
+    - solo caracteres ASCII: las tildes y la ñ se quitan ("versión" queda "version");
     - líneas de 72 columnas como máximo;
-    - páginas de 58 líneas separadas por salto de página (form feed), con
-      encabezado y pie de página numerado;
-    - tabla de contenidos con el número de página de cada sección;
+    - páginas de 58 líneas separadas por un salto de página (form feed), con
+      encabezado y un pie de página numerado;
+    - una tabla de contenidos con el número de página de cada sección;
     - vectores de prueba calculados con el código real ({{VECTOR:NOMBRE}}).
 
     python3 RFC/formatear_rfc.py          # genera RFC/rfc-faronet.txt
 
-Marcas en la fuente:
-    #...                        comentario (no sale)
-    1.  Título / 1.1.  Título   encabezados numerados (se agregan al índice)
-    Apéndice A.  Título         apéndices (al índice)
-    =Título=                    encabezado sin número (al índice), p. ej. "Direcciones de los autores"
-    texto normal                párrafo: se ajusta a 72 columnas con sangría de 3
-    - texto  o  1. texto        viñeta o lista numerada (sangría francesa)
-    ~~~ ... ~~~                 bloque preformateado: se copia tal cual (diagramas, tablas)
-    {{TOC}}                     aquí va la tabla de contenidos
+La fuente usa estas marcas:
+    #...                        comentario, que no aparece en el RFC
+    1.  Título / 1.1.  Título   encabezados numerados, que se agregan al índice
+    Apéndice A.  Título         apéndices, que también van al índice
+    =Título=                    encabezado sin número que va al índice, como "Direcciones de los autores"
+    texto normal                párrafo, que se ajusta a 72 columnas con sangría de 3
+    - texto  o  1. texto        viñeta o lista numerada, con sangría francesa
+    ~~~ ... ~~~                 bloque preformateado que se copia tal cual (diagramas y tablas)
+    {{TOC}}                     lugar donde va la tabla de contenidos
     {{VECTOR:NOMBRE}}           vector de prueba (ver vectores.py)
-    {{PAGINA}}                  forzar salto de página
+    {{PAGINA}}                  salto de página forzado
 """
 import os
 import re
@@ -68,8 +68,8 @@ def linea_de_tres(izq, centro, der, ancho=ANCHO):
 
 
 def leer_bloques(texto):
-    """Devuelve una lista de bloques: (tipo, lineas). Tipos: titulo, parrafo,
-    vineta, pre, toc, salto."""
+    """Divide la fuente en bloques y devuelve una lista de pares (tipo, líneas).
+    Los tipos son titulo, parrafo, vineta, pre, toc y salto."""
     import vectores
     bloques = []
     lineas = texto.split("\n")
@@ -139,8 +139,8 @@ def leer_bloques(texto):
 
 
 def renderizar(bloques, toc_lineas):
-    """Convierte bloques en líneas de texto (sin paginar). Devuelve lista de
-    (linea, mantener_con_siguiente, es_titulo_texto)."""
+    """Convierte los bloques en líneas de texto, todavía sin paginar. Devuelve
+    una lista de tuplas (linea, mantener_con_siguiente, es_titulo_texto)."""
     salida = []
     for tipo, contenido in bloques:
         if tipo == "titulo":
@@ -164,7 +164,7 @@ def renderizar(bloques, toc_lineas):
         elif tipo == "pre":
             n = len(contenido)
             for k, linea in enumerate(contenido):
-                salida.append((linea, k < n - 1 and n <= 40, None))   # no partir bloques cortos
+                salida.append((linea, k < n - 1 and n <= 40, None))   # los bloques cortos no se parten
             salida.append(("", False, None))
         elif tipo == "toc":
             for linea in toc_lineas:
@@ -176,9 +176,9 @@ def renderizar(bloques, toc_lineas):
 
 
 def paginar(lineas):
-    """Pagina respetando bloques que no deben partirse. Devuelve (paginas,
-    pagina_de_cada_titulo)."""
-    cuerpo_max = LINEAS_POR_PAGINA - 6            # encabezado (2) + pie (3) + margen
+    """Reparte las líneas en páginas sin partir los bloques que deben ir juntos.
+    Devuelve las páginas y la página en que quedó cada título."""
+    cuerpo_max = LINEAS_POR_PAGINA - 6            # se descuentan el encabezado (2), el pie (3) y un margen
     paginas, actual, titulos = [], [], {}
     i = 0
     while i < len(lineas):
@@ -189,18 +189,18 @@ def paginar(lineas):
                 actual = []
             i += 1
             continue
-        # tamaño del grupo que debe ir junto
+        # Tamaño del grupo de líneas que debe ir junto.
         j = i
         while j < len(lineas) and lineas[j][1]:
             j += 1
         grupo = lineas[i:j + 1]
-        if titulo:                                 # un título nunca queda solo al final
+        if titulo:                                 # un título nunca queda solo al final de una página
             grupo = lineas[i:min(j + 4, len(lineas))]
         if len(actual) + len(grupo) > cuerpo_max and len(grupo) <= cuerpo_max and actual:
             paginas.append(actual)
             actual = []
         if not actual and not texto.strip():
-            i += 1                                 # no empezar página con línea en blanco
+            i += 1                                 # una página no empieza con una línea en blanco
             continue
         if titulo:
             titulos[titulo] = len(paginas) + 1
@@ -215,8 +215,8 @@ def paginar(lineas):
 
 
 def armar_toc(titulos_orden, paginas_de):
-    """Índice con puntos alineados en columnas fijas y el número de página
-    pegado al margen derecho (columna 72)."""
+    """Arma el índice, con los puntos alineados en columnas fijas y el número
+    de página pegado al margen derecho (columna 72)."""
     lineas = []
     for t in titulos_orden:
         if RE_SECCION.match(t):
@@ -246,7 +246,7 @@ def main():
     titulos_toc = [c[0] for t, c in bloques[idx_toc:] if t == "titulo"]
 
     paginas_de = {t: 0 for t in titulos_toc}
-    for _ in range(3):                            # iterar hasta que los números se estabilicen
+    for _ in range(3):                            # se repite hasta que los números de página se estabilizan
         toc = armar_toc(titulos_toc, paginas_de)
         paginas, nuevas = paginar(renderizar(bloques, toc))
         if all(nuevas.get(t) == paginas_de.get(t) for t in titulos_toc):
